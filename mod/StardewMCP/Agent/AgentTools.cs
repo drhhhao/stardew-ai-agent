@@ -185,7 +185,7 @@ public static partial class AgentTools
                 Name = "close_menu",
                 Description = "Close the open menu, shop, letter or dialogue. Closing a letter accepts its quest and hands over its attachments; " +
                               "closing a treasure or gift menu first takes whatever fits in your inventory (chests keep their items).",
-                Schema = Obj(new { }),
+                Schema = Obj(new { reason = Str(ReasonDesc) }),
                 Run = CloseMenu
             },
             MenuTool(),
