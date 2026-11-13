@@ -12,8 +12,8 @@ nothing else in the mod is a public contract.
 | `/mcp`, `/mcp/p1` … `/mcp/p3` | MCP endpoints (streamable HTTP), one per farmer. `/mcp` is `/mcp/p1`. `?breaks=1` turns on [session breaks](configuration.md#long-runs) for that client |
 | `/overlay` | Live thoughts and actions; add it to OBS as a browser source (`?player=p2` for one seat, `&mock=1` for sample text without the game, `?lang=English` for the UI language) |
 | `/replay` (also `/`) | Day-by-day replay of the logs |
-| `/api/contract` | What a client can rely on: `apiVersion`, `modVersion`, every tool (`name`, `instant`, `instantFor`), every reason code, and the timing to fit client timeouts to (`maxHeldSeconds`, `thinkTimeoutSeconds`, `actionTimeoutSeconds`). See [Versions](#versions) |
-| `/api/state` | Game state as JSON (`apiVersion` first): every seat with its current action and thinking time, plus `saveFolder`, `paused`, `stopAfterDay`, `stopNow`. After a day that ended without `go_to_bed` (2:00 AM, health 0), `passOut` says why and `pendingJournalDay` is the day whose journal is still owed until `journal(day=N)` is written |
+| `/api/contract` | What a client can rely on: `apiVersion`, `modVersion`, every tool (`name`, `zeroTime`, `readOnly`, `serialized`, `legacy`), every reason code, and the timing to fit client timeouts to (`maxHeldSeconds`, `thinkTimeoutSeconds`, `actionTimeoutSeconds`). See [Versions](#versions). Per tool: `zeroTime` = the call costs no game time; `readOnly` = the call never writes game state and runs in the observation lane, so it stays responsive while an action runs; `serialized` = the call writes game state without taking game time, one mutation at a time (`pay`, `give`, `name`) — zero game time alone no longer means "only reads". A tool with `legacy: true` is kept callable for existing clients but hidden from the built-in AI, which receives the newer replacement tool instead |
+| `/api/state` | Game state as JSON (`apiVersion` first): every seat with its current action and thinking time, plus `saveFolder`, `paused`, `stopAfterDay`, `stopNow`. After a day that ended without `sleep` (or the legacy `go_to_bed`; 2:00 AM, health 0), `passOut` says why and `pendingJournalDay` is the day whose journal is still owed until `journal(day=N)` is written |
 | `/api/control` | [Run control](#run-control): `POST {"action": "pause" \| "resume" \| "stop_after_day" \| "stop_now" \| "clear_stop"}`; `GET` reads the flags |
 | `/api/feed?after=N` | The live log feed the overlay reads: state, thought language, meta and every log entry after id `N` |
 | `/api/days` | The day numbers that have a log |
@@ -41,9 +41,9 @@ During a pause, a call that waits longer than 9 minutes is answered with an erro
 so the AI simply calls again and no stale call runs after `resume`. A script that watches for hangs should check
 `paused` in `/api/state` before it treats a clock that isn't moving as a hang.
 
-If an unknown menu stays open for more than 10 seconds while `go_to_bed` waits for the new day (the shipping screen,
-level-ups, the save screen and the ready check are expected), the mod logs its type and closes it instead of letting
-the call run into its 5 minute timeout.
+If an unknown menu stays open for more than 10 seconds while `sleep` waits for the new day (the legacy
+`go_to_bed` the same; the shipping screen, level-ups, the save screen and the ready check are expected), the mod
+logs its type and closes it instead of letting the call run into its 5 minute timeout.
 
 ## Tool results
 
@@ -53,23 +53,36 @@ only when the tool failed.
 ```json
 { "content": [{ "type": "text", "text": "[partial · low_energy] Stopped: energy too low (2). ..." }],
   "isError": false,
-  "structuredContent": { "ok": true, "reason": "low_energy", "partial": true, "data": { "done": 12, "remaining": 28, "skipped": 0 } } }
+  "structuredContent": { "ok": true, "changed": true, "reason": "ok", "partial": true,
+                         "stoppedBecause": "low_energy",
+                         "data": { "done": 12, "remaining": 28, "skipped": 0 } } }
 ```
 
-- The text starts with a short tag when the tool did only part of its work (`[partial · reason]`) or failed for a
-  known reason (`[no_path]`). Plain successes have no tag.
-- `reason` is one of: `ok`, `partial`, `low_energy`, `no_path`, `not_here`, `no_item`, `inventory_full`, `menu_open`,
+- The text starts with a short tag when the tool did only part of its work (`[partial · reason]`), changed nothing
+  (`[no_change]`) or failed for a known reason (`[no_path]`). Plain successes have no tag.
+- `changed` says whether the call changed game state. `changed: false` is an explicit `no_change`: a success that
+  found nothing to do (the tile was already watered, the gift limit was already spent). It is not an error, and it is
+  not progress for the loop guard — an AI repeating a call that changes nothing is still caught by the no-progress
+  rule, while a repeated idempotent call now answers `no_change` instead of pretending to work.
+- `reason` is one of: `ok`, `partial`, `no_change`, `low_energy`, `no_path`, `not_here`, `no_item`, `inventory_full`, `menu_open`,
   `too_late`, `shop_closed`, `wrong_season`, `needs_upgrade`, `interrupted`, `timeout`, plus `no_money`,
   `invalid_args`, `not_found`, `not_ready`, `error` and `other` (a failure that has no specific code yet). `too_late`
   and `wrong_season` are reserved: the game gives no reliable signal, so no tool sets them yet.
+- A call that stopped early sets `partial: true` and names the stop cause in `stoppedBecause` (a machine-readable
+  code such as `low_energy`, `menu_open` or `inventory_full`) next to the human-readable text.
+- When an argument is rejected with `invalid_args`, the result may carry `validValues`: the values the argument
+  accepts (the reachable mine floors, the open menu's options...), so the next
+  call can be right.
 - `use_tool`, `plant` and `harvest` are batch tools: they always report `data` (`done`, `remaining` = tiles not
-  reached, `skipped` = tiles tried and failed) and set `partial` when `remaining` or `skipped` is above 0. `reason`
-  then says why the batch stopped (or, failing that, why tiles were skipped).
+  reached, `skipped` = tiles tried and failed) and set `partial` when `remaining` or `skipped` is above 0.
 - The common failures (`walk_to`, `travel_to`, `use_tool`, `plant`, `harvest`, `interact`, `talk_to`, `buy`, `ship`,
   `eat`, `go_to_bed`, `shop_list`, `think`) have codes; other tools still return text only (`reason` is `other` on failure).
+- Pure observations (the `readOnly` tools) keep their result to the answer itself: the repeated status footer
+  (time, place, energy, money, menu) stays on action results and is added to an observation only when something
+  relevant changed or an event arrived.
 - `walk_to`, `travel_to` and `talk_to` may end their text with a `Seen on the way, still there: ...` line: forage, dig
   spots, berry bushes and dropped items the farmer passed (also when an event stopped the walk). The log's result text has it too.
-- Logs: result lines of `day_NNN.jsonl` carry `reason` and `partial` (the text there stays untagged). Next to each
+- Logs: result lines of `day_NNN.jsonl` carry `reason`, `partial` and `changed` (the text there stays untagged). Next to each
   day's log the mod writes `day_NNN_summary.json` with the failure reasons per tool and per player. The overlay marks
   partial results `◐` and shows the reason, the replay shows a reason badge.
 
@@ -93,6 +106,13 @@ the other seats add `_p2`, `_p3`:
 `apiVersion` (in `/api/contract` and `/api/state`) goes up when an endpoint, a result field or a timing rule changes in a
 way a client has to know about. Adding a tool or a field does not raise it. A client checks it once at startup instead of
 guessing from missing fields. The MCP `initialize` reply reports the mod's version (`manifest.json`) as `serverInfo.version`.
+
+- **1** (2026-11): first contract. Each tool carried `instant` / `instantFor`, where instant lumped together "no game
+  time", "only reads" and "runs in the observation lane".
+- **2** (2026-11): each tool carries `zeroTime` / `readOnly` / `serialized` in addition to the retained v1
+  `instant` / `instantFor` fields, and results gained `changed` (with explicit `no_change`), `stoppedBecause`
+  and `validValues`. `zeroTime` no longer implies read-only or the
+  observation lane: `pay`, `give` and `name` are zero-time state writes on the serialized mutation lane.
 
 ## Browser pages
 

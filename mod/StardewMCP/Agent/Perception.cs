@@ -48,10 +48,12 @@ public static class Perception
     public static bool Interrupts { get; set; } = true;
 
     // Tools that may be stopped, and only where nothing is half done (SafeToStop): a wait at any time, a rest once in bed,
-    // go_to_bed only while it waits in bed for the others (the game lets a sleeper cancel then), the others while the farmer walks.
+    // sleep (go_to_bed) only while it waits in bed for the others (the game lets a sleeper cancel then), the walks and
+    // farm/social jobs while the farmer moves between two steps.
     private static readonly HashSet<string> Stoppable = new()
     {
-        "walk_to", "travel_to", "wait", "rest", "go_to_bed", "use_tool", "plant", "harvest", "interact", "talk_to", "ship"
+        "walk_to", "travel_to", "travel_to_location", "travel_to_shop", "wait", "rest", "go_to_bed", "sleep",
+        "use_tool", "plant", "plant_item", "harvest", "interact", "talk_to", "talk_to_villager", "give_gift", "ship"
     };
 
     private static readonly ConcurrentQueue<SeenEvent>[] Queues = Enumerable.Range(0, Players.Seats).Select(_ => new ConcurrentQueue<SeenEvent>()).ToArray();
@@ -125,11 +127,16 @@ public static class Perception
         {
             "walk_to" => $"walk_to ({AgentTools.I(a, "x", -1)},{AgentTools.I(a, "y", -1)})",
             "travel_to" => $"travel_to {AgentTools.S(a, "location")}",
+            "travel_to_location" => $"travel_to_location {AgentTools.S(a, "location")}",
+            "travel_to_shop" => $"travel_to_shop {AgentTools.S(a, "shop")}",
             "wait" => $"wait {Math.Clamp(AgentTools.I(a, "minutes", 30), 10, 240)} min (standing still)",
             "use_tool" => $"use_tool {AgentTools.S(a, "tool")} on {Tiles()} tile(s)",
             "plant" => $"plant {AgentTools.S(a, "item")} on {Tiles()} tile(s)",
+            "plant_item" => $"plant_item {AgentTools.S(a, "item")}" + (Tiles() > 0 ? $" on {Tiles()} tile(s)" : ""),
             "harvest" => $"harvest {Tiles()} tile(s)",
             "talk_to" => $"talk_to {AgentTools.S(a, "name")}",
+            "talk_to_villager" => $"talk_to_villager {AgentTools.S(a, "name")}",
+            "give_gift" => $"give_gift {AgentTools.S(a, "item")} to {AgentTools.S(a, "name")}",
             "ship" => $"ship {AgentTools.S(a, "item")}",
             "interact" => a.ValueKind == JsonValueKind.Object && a.TryGetProperty("x", out _) ? $"interact ({AgentTools.I(a, "x", -1)},{AgentTools.I(a, "y", -1)})" : "interact",
             _ => name
@@ -328,7 +335,7 @@ public static class Perception
                          $"Actually doing: {DoingText(s)}. Claims: {ClaimsText(me, s)}.";
             }
             // Both on their way to bed: not news, and waking each other right then left the night unable to begin (days 6-7, 2026-10-20).
-            bool bothToBed = me.Runtime.CurrentTool == "go_to_bed" && Acts[s.Screen]?.Tool == "go_to_bed";
+            bool bothToBed = ToolCatalog.IsSleep(me.Runtime.CurrentTool) && ToolCatalog.IsSleep(Acts[s.Screen]?.Tool);
             if (!bothToBed)
                 Notify(me, enteredHome ? "house" : "arrived", shortText, detail);
             me.Runtime.Log.Add("notice", text: detail, args: new { kind = enteredHome ? "house" : "arrived", who = s.Id, quiet = bothToBed ? true : (bool?)null });
@@ -404,19 +411,19 @@ public static class Perception
 
     /// <summary>In bed waiting for the others: the sleep ready check is open and still cancelable (not once the night began).</summary>
     internal static bool Asleep(PendingCall call, AgentRuntime rt) =>
-        call.Tool.Name == "go_to_bed" && !rt.WakingUp &&
+        ToolCatalog.IsSleep(call.Tool.Name) && !rt.WakingUp &&
         Game1.activeClickableMenu is StardewValley.Menus.ReadyCheckDialog { checkName: "sleep" } check && check.isCancelable();
 
     /// <summary>
     /// Whether the running action may be stopped right now with nothing half done: never mid-swing, in a menu (but a sleeper's
     /// ready check), during a warp, fade or cutscene. A wait, a rest once in bed and a sleeper stand still and stop anywhere;
-    /// everything else only while its farmer walks between two steps of the job, on a tile of its own. go_to_bed's walk home is
+    /// everything else only while its farmer walks between two steps of the job, on a tile of its own. sleep's walk home is
     /// stopped only for a client deadline (<paramref name="bedWalk"/>), never by an event.
     /// </summary>
     internal static bool SafeToStop(PendingCall call, bool asleep, bool bedWalk = false)
     {
         var name = call.Tool.Name;
-        if (!Stoppable.Contains(name) || (name == "go_to_bed" && !asleep && !bedWalk)) return false;
+        if (!Stoppable.Contains(name) || (ToolCatalog.IsSleep(name) && !asleep && !bedWalk)) return false;
         var p = Game1.player;
         if ((Game1.activeClickableMenu != null && !asleep) || Game1.isWarping || Game1.fadeToBlack || Game1.newDay || Game1.eventUp || p.UsingTool)
             return false;
@@ -458,7 +465,7 @@ public static class Perception
         var tool = call.Tool.Name;
         var text = asleep
             ? $"Woken up: you got out of bed at {WorldText.FormatTime(Game1.timeOfDay)} because {why}. The day goes on; " +
-              "call go_to_bed again when you want to sleep."
+              "call sleep again when you want to sleep."
             : $"Interrupted: your {tool} was stopped at {Where()} before it finished, because {why}. " +
               "Its normal result is lost; use look or inventory to see how far it got, then decide what to do.";
         if (Stop(rt, text))

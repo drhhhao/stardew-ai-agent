@@ -27,14 +27,16 @@ public enum CallSource
 /// A tool call waiting for (or running on) the game thread. Its life: queued, running (<see cref="AgentRuntime.CurrentCall"/>),
 /// answered. The answer goes out once, through <see cref="Answer"/>, from whoever ends it: the lane when the coroutine finishes,
 /// run control or a client deadline when it never started, <see cref="ReplyDeadline"/> when a sleeper is answered early
-/// while go_to_bed keeps running. A running call that was answered early still finishes in its lane, but its later result
+/// while sleep (go_to_bed) keeps running. A running call that was answered early still finishes in its lane, but its later result
 /// only goes to the log.
 /// </summary>
 public class PendingCall
 {
     public ToolDef Tool = null!;
     public JsonElement Args;
-    /// <summary>Observes only: keeps the world frozen and may answer during the seat's own action.</summary>
+    /// <summary>Zero game time: the world stays frozen while the call runs. Which lane it runs in was decided at enqueue
+    /// (<see cref="ToolCatalog.UseObservationLane"/>); a <see cref="ToolDef.Serialized"/> zero-time call is Instant but
+    /// still runs in the action lane.</summary>
     public bool Instant;
     public CallSource Source;
     /// <summary>The save (<see cref="GameSession.Generation"/>) an AI's call was admitted for; a call of an earlier one is dropped.</summary>
@@ -85,7 +87,7 @@ public class AgentRuntime
     /// <summary>Profession choices (skill, level) waiting for choose_profession, and the game day they were offered.</summary>
     public List<Microsoft.Xna.Framework.Point> PendingProfessions { get; } = new();
     public int PendingProfessionDay { get; set; }
-    /// <summary>Farm day the "too early for bed" note was given (once a day, see go_to_bed).</summary>
+    /// <summary>Farm day the "too early for bed" note was given (once a day, see sleep / go_to_bed).</summary>
     public int EarlyBedDay { get; set; }
     public ModConfig Config { get; }
     public IModHelper Helper { get; }
@@ -111,8 +113,8 @@ public class AgentRuntime
     /// </summary>
     public bool Interrupt(string result) => _actionLane.Interrupt(result);
 
-    /// <summary>go_to_bed is past the day change and waiting for this farmer to wake up (needs the world running).</summary>
-    public bool WakingUp => _actionLane.Current?.Tool.Name == "go_to_bed" && Context.IsWorldReady && Game1.Date.TotalDays > _actionLane.CallStartDay;
+    /// <summary>go_to_bed/sleep is past the day change and waiting for this farmer to wake up (needs the world running).</summary>
+    public bool WakingUp => ToolCatalog.IsSleep(_actionLane.Current?.Tool.Name) && Context.IsWorldReady && Game1.Date.TotalDays > _actionLane.CallStartDay;
     /// <summary>The "reason" the running action was given (what the viewers see), or null when no action runs. Used by the pass-out record.</summary>
     public string? CurrentReason => _actionLane.Current is { Instant: false } c ? AgentTools.Reason(c.Args) : null;
 
@@ -130,8 +132,9 @@ public class AgentRuntime
     }
 
     /// <summary>
-    /// Queue a call. Tools marked <see cref="ToolDef.Instant"/> go to the observation lane (they answer even during the
-    /// seat's own action), except debug ops: those and everything else wait their turn in the action lane.
+    /// Queue a call. The lane is <see cref="ToolCatalog.UseObservationLane"/>: zero-time calls that are not
+    /// <see cref="ToolDef.Serialized"/> go to the observation lane (they answer even during the seat's own action);
+    /// debug ops and everything else wait their turn in the action lane.
     /// </summary>
     public Task<(bool ok, string text)> Enqueue(ToolDef tool, JsonElement args, CallSource source) =>
         EnqueueCall(tool, args, source).Done.Task;
@@ -154,7 +157,7 @@ public class AgentRuntime
             }
             call.Generation = generation;
         }
-        (source != CallSource.Debug && call.Instant ? _observations : _actions).Enqueue(call);
+        (ToolCatalog.UseObservationLane(tool, call.Instant, source == CallSource.Debug) ? _observations : _actions).Enqueue(call);
         return call;
     }
 
@@ -315,7 +318,7 @@ public class AgentRuntime
         private void Start(PendingCall call)
         {
             Current = call;
-            _ctx = new CallContext();
+            _ctx = new CallContext { Instant = call.Instant };
             _ticksInCall = 0;
             CallStartDay = Context.IsWorldReady ? Game1.Date.TotalDays : 0;
             _lastHealth = Context.IsWorldReady ? Game1.player.health : 0;
@@ -368,15 +371,15 @@ public class AgentRuntime
                 return;
 
             _ticksInCall++;
-            // go_to_bed waits for the others until 2:00 AM at the latest and keeps its own, longer limit
-            if (_ticksInCall > 60 * 60 * 6 && Current!.Tool.Name != "go_to_bed")
+            // sleep (go_to_bed) waits for the others until 2:00 AM at the latest and keeps its own, longer limit
+            if (_ticksInCall > 60 * 60 * 6 && !ToolCatalog.IsSleep(Current!.Tool.Name))
             {
                 _ctx!.Fail(Reasons.Timeout, "Action timed out after 6 minutes of real time.");
                 Finish();
                 return;
             }
 
-            if (Current!.Tool.Name != "go_to_bed" && CallStartDay > 0 && Context.IsWorldReady &&
+            if (!ToolCatalog.IsSleep(Current!.Tool.Name) && CallStartDay > 0 && Context.IsWorldReady &&
                 Game1.Date.TotalDays > CallStartDay && Game1.activeClickableMenu == null && !Game1.fadeToBlack && !Game1.newDay)
             {
                 _rt.Log.Add("system", text: $"Passed out / new day: farm day {AgentLog.FarmDay}");
@@ -461,8 +464,9 @@ public class AgentRuntime
             _ctx = null;
 
             var text = ctx.Result;
-            // Loop guard: "you tried this 3 times", "you haven't done anything for a while".
-            var hint = _rt.Guard.End(call, ctx.Ok, ctx.Result);
+            // Loop guard: "you tried this 3 times", "you haven't done anything for a while". An explicit no_change
+            // (ctx.Changed false) does not count as progress.
+            var hint = _rt.Guard.End(call, ctx.Ok, ctx.Result, ctx.Changed);
             if (hint.Length > 0) text = text.TrimEnd() + "\n" + hint;
 
             // Forage and other finds the farmer walked past, also when the walk was interrupted (in the log too)
@@ -476,7 +480,15 @@ public class AgentRuntime
             // a call answered early (ReplyDeadline) leaves what was heard meanwhile for the next result
             var mail = call.Tool.Mail && !call.Answered ? Perception.TakeMail(_rt.Log.Player) : "";
             if (mail.Length > 0) text = text.TrimEnd() + "\n" + mail;
-            if (call.Tool.AppendStatus && Context.IsWorldReady)
+
+            // What the farmer had to do for itself while the AI was thinking (SelfDefense): says why its health moved
+            // or why it swung at something it did not ask to fight.
+            var defended = call.Tool.Mail && Players.ById(_rt.Log.Player) is { } seat ? SelfDefense.TakeNotes(seat) : "";
+            if (defended.Length > 0) text = text.TrimEnd() + "\n" + defended;
+
+            // A pure observation (look, status...) already shows the same state: no duplicated footer for it.
+            // Everything else with AppendStatus keeps the one-line footer.
+            if (call.Tool.AppendStatus && !call.Tool.ReadOnly && Context.IsWorldReady)
                 text = text.TrimEnd() + "\n" + Observation.OneLine(AgentTools.Footer()); // one line, however many menus are open
             text = SessionBreaks.Annotate(_rt.Log, call, text); // planned session break notice (#30)
 

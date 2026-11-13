@@ -66,7 +66,7 @@ those logs.
 
 ## Highlights
 
-- 🤖 **Plays most of the game.** 70 tools for farming, fishing, mining, combat, cooking, crafting, shopping,
+- 🤖 **Plays most of the game.** 76 tools for farming, fishing, mining, combat, cooking, crafting, shopping,
   animals, buildings, festivals, quests, the Community Center, the museum, friendship and marriage.
   → [Everything it can do](docs/features.md)
 - 👥 **Up to three AIs on one farm** in split-screen co-op, with or without you. Each has its own money, crops and
@@ -167,6 +167,11 @@ Example: you play P1, two AIs play with you, and time keeps running.
 - `true` (default): the whole game world stops while an AI thinks, so a slow model loses no game time.
 - `false`: time runs as usual. The better choice when you play along.
 
+The freeze is about time, not safety: in a single-player run only the clock is held, so monsters keep
+moving. `SelfDefense` (on by default) lets a farmer that is between actions hit a monster that comes
+within reach, eat when health is low, and back away when there is no food left. Nothing is paused for
+that, so it also works on a farm that other players share.
+
 Every setting is listed in [Configuration](docs/configuration.md).
 
 ### Connect your own AI app (MCP)
@@ -198,7 +203,7 @@ again to continue. To stop at the end of the day, or for other run controls, see
 - **Your API keys** are stored as plain text in `config.json`. Don't share that file.
 - **Language.** The AIs think and talk in the game's language. To force one, set `ThoughtLanguage`, e.g.
   `"English"` or `"Thai"`.
-- **Local models** work through `openai` + `BaseUrl`, but small models often get confused with 70 tools to choose
+- **Local models** work through `openai` + `BaseUrl`, but small models often get confused with 76 tools to choose
   from.
 - **How the AI plays** is set in `Mods/StardewMCP/assets/system_prompt.md`. Edit that file to change its behaviour.
 - **Hardware.** Three or four screens at once are heavy: a 2560×1440 window at 60 FPS needs a mid-range GPU or

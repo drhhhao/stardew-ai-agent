@@ -58,12 +58,14 @@ public sealed class LoopGuard
     }
 
     /// <summary>After a call finished: the hints to append to its result (empty when there are none).</summary>
-    public string End(PendingCall call, bool ok, string result)
+    /// <param name="changed">Whether the call changed game state, when the tool reported it; forwarded to the
+    /// no-progress rule so an explicit no_change does not count as loop progress. Null keeps the old rule.</param>
+    public string End(PendingCall call, bool ok, string result, bool? changed = null)
     {
         if (!Applies(call)) return "";
         try
         {
-            var notes = _core.After(LoopDetector.KeyOf(call.Tool.Name, call.Args), call.Instant, ok, result, Snapshot());
+            var notes = _core.After(LoopDetector.KeyOf(call.Tool.Name, call.Args), call.Instant, ok, result, Snapshot(), changed);
             foreach (var note in notes)
                 LogNote(call, note);
             return string.Join("\n", notes.Select(n => n.Text));

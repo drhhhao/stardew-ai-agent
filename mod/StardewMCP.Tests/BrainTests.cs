@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
@@ -72,6 +74,38 @@ public class BrainTests
         Assert.Equal(("toolu_1", "walk_to"), (call.Id, call.Name));
         Assert.Equal(1, JsonDocument.Parse(call.ArgumentsJson).RootElement.GetProperty("x").GetInt32());
         Assert.Equal((120, 30, "tool_use"), (r.InputTokens, r.OutputTokens, r.StopReason));
+    }
+
+    [Fact]
+    public void Anthropic_reply_with_thinking_goes_back_verbatim()
+    {
+        var json = JsonNode.Parse("""
+            {"content":[{"type":"thinking","thinking":"","signature":"sig-abc"},{"type":"tool_use","id":"toolu_1","name":"walk_to","input":{"x":1,"y":2,"reason":"r"}}],
+             "stop_reason":"tool_use","usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":900}}
+            """)!;
+        var r = AnthropicProvider.Parse(json);
+        Assert.Equal(900, r.CachedInputTokens);
+
+        var messages = new List<ChatMessage>
+        {
+            ChatMessage.User("Good morning"),
+            ChatMessage.Assistant(r.Text, r.ToolCalls, r.AnthropicContent),
+            ChatMessage.Tool(new[] { new LlmToolResult("toolu_1", "walk_to", "Arrived", false) })
+        };
+        var body = new AnthropicProvider(Http, "claude-x", "key", null, 1234).BuildBody("SYS", messages, Tools);
+        var assistant = (JsonArray)body["messages"]![1]!["content"]!;
+        Assert.Equal(json["content"]!.ToJsonString(), assistant.ToJsonString());
+    }
+
+    [Fact]
+    public void Anthropic_body_sets_effort_and_prompt_caching()
+    {
+        var withEffort = new AnthropicProvider(Http, "claude-x", "key", null, 1234, "Low").BuildBody("SYS", Conversation(), Tools);
+        Assert.Equal("low", withEffort["output_config"]!["effort"]!.GetValue<string>());
+        Assert.Equal("ephemeral", withEffort["cache_control"]!["type"]!.GetValue<string>());
+
+        var noEffort = new AnthropicProvider(Http, "claude-x", "key", null, 1234).BuildBody("SYS", Conversation(), Tools);
+        Assert.Null(noEffort["output_config"]);
     }
 
     // ------------------------------------------------------------------ OpenAI
@@ -248,6 +282,118 @@ public class BrainTests
         Assert.Contains("Gemini (an AI)", text);
         Assert.DoesNotContain("p2", text); // the AIs only ever read farmer names, never seat ids
         Assert.Contains("(nothing yet", text); // empty self
+    }
+
+    private static Prompts.SystemInputs Inputs(bool guide, bool gifts) => new(
+        "m", "Duck", "p1", "English", FreezeWhileThinking: true, Array.Empty<(string, string, string)>(),
+        Self: "", People: "", Lessons: "", Plan: "", Notes: "", Guide: guide, GiftTastes: gifts);
+
+    private const string FactsTemplate = "# Useful facts\n{GUIDE}\n- Day 1 starts inside.\n# Villagers\n- Gifts. {GIFT_RULE}\n";
+
+    [Fact]
+    public void System_prompt_lists_the_guide_first_when_it_is_on()
+    {
+        var text = Prompts.System(FactsTemplate, Inputs(guide: true, gifts: true));
+        Assert.DoesNotContain("{", text);
+        Assert.StartsWith("# Useful facts\n- **Strategy guide.** `guide()`", text);
+        Assert.Contains("\n- Day 1 starts inside.", text);
+        Assert.Contains("`villagers(item=X)` says who loves X.", text);
+        Assert.DoesNotContain("Nobody tells you", text);
+    }
+
+    [Fact]
+    public void System_prompt_without_the_guide_leaves_no_blank_bullet()
+    {
+        var text = Prompts.System(FactsTemplate, Inputs(guide: false, gifts: false));
+        Assert.Equal("# Useful facts\n- Day 1 starts inside.\n# Villagers\n- Gifts. Nobody tells you the tastes: learn them from reactions and write them in your notes.\n", text);
+        var crlf = Prompts.System(FactsTemplate.Replace("\n", "\r\n"), Inputs(guide: false, gifts: false));
+        Assert.StartsWith("# Useful facts\r\n- Day 1", crlf);
+    }
+
+    [Fact]
+    public void Gift_rule_follows_gift_tastes_alone()
+    {
+        var text = Prompts.System(FactsTemplate, Inputs(guide: false, gifts: true)); // RevealGiftTastes without the guide
+        Assert.DoesNotContain("Strategy guide", text);
+        Assert.Contains("`villagers(name)` lists what they love and hate", text);
+    }
+
+    [Fact]
+    public void Shipped_system_prompt_has_both_placeholders()
+    {
+        var path = Path.Combine(RepoMod(), "StardewMCP", "assets", "system_prompt.md");
+        var template = File.ReadAllText(path);
+        Assert.Contains("# Useful facts\n{GUIDE}\n- ", template.Replace("\r\n", "\n"));
+        Assert.Contains("{GIFT_RULE}", template);
+        foreach (var (guide, gifts) in new[] { (false, false), (true, true) })
+        {
+            var text = Prompts.System(template, Inputs(guide, gifts)).Replace("\r\n", "\n");
+            Assert.DoesNotContain("{GUIDE}", text);
+            Assert.DoesNotContain("{GIFT_RULE}", text);
+            Assert.DoesNotContain("# Useful facts\n\n", text);
+            Assert.DoesNotContain("\n- \n", text);
+            Assert.Equal(guide, text.Contains("# Useful facts\n- **Strategy guide.**"));
+        }
+    }
+
+    // -------------------------------------------------------------- prompt regressions (Phase 6)
+
+    /// <summary>Every tool name the prompts must stop recommending: the legacy entries with semantic replacements.</summary>
+    private static readonly string[] LegacyToolNames =
+    {
+        "go_to_bed", "plant", "craft", "cook", "crack_geode", "buy_animal", "animals", "build",
+        "chest", "talk_to", "close_menu", "quests", "museum", "special_orders", "travel_to", "wear"
+    };
+
+    [Fact]
+    public void System_prompt_recommends_only_preferred_tools()
+    {
+        var template = File.ReadAllText(Path.Combine(RepoMod(), "StardewMCP", "assets", "system_prompt.md"));
+        foreach (var guide in new[] { false, true })
+        {
+            var text = Prompts.System(template, Inputs(guide, gifts: true));
+            foreach (var legacy in LegacyToolNames)
+                Assert.DoesNotContain($"`{legacy}`", text); // a backticked legacy name = the prompt recommends a hidden tool
+        }
+    }
+
+    [Fact]
+    public void System_prompt_sets_the_daily_cadence()
+    {
+        var template = File.ReadAllText(Path.Combine(RepoMod(), "StardewMCP", "assets", "system_prompt.md"));
+        var text = Prompts.System(template, Inputs(guide: false, gifts: false));
+        Assert.Contains("1–3 goals", text);                       // few morning goals
+        Assert.Contains("finish one goal before starting the next", text);
+        Assert.Contains("Prepare before you travel", text);       // pack items, time, route before leaving
+        Assert.Contains("Sightings are a bonus, not a detour", text); // pick up only on the route, serving a goal
+        Assert.Contains("Re-observe after a failure or an interruption; a successful action needs no re-check", text);
+        Assert.Contains("the only other reason to re-observe", text); // missing coordinates
+        Assert.Contains("Start wrapping up about 22:00", text);   // evening wrap-up
+        Assert.Contains("`sleep` never refuses over a missing journal", text); // journal stays, sleep does not gate
+        Assert.Contains("`menu` and `interact` are only for menus and tiles none of them covers", text);
+    }
+
+    [Fact]
+    public void Morning_and_nudge_end_the_day_with_sleep()
+    {
+        var morning = Prompts.Morning(2, "briefing", null, new[] { "Gemini" }, "6:00 AM");
+        Assert.Contains("1–3 goals", morning);
+        Assert.Contains("`sleep`", morning);
+        Assert.DoesNotContain("go_to_bed", morning);
+
+        var nudge = Prompts.Nudge("9:00 PM", inBed: false);
+        Assert.Contains("`sleep`", nudge);
+        Assert.DoesNotContain("go_to_bed", nudge);
+    }
+
+    /// <summary>The mod/ folder, found upwards from the test output.</summary>
+    private static string RepoMod()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, "StardewMCP", "assets")))
+            dir = dir.Parent;
+        Assert.NotNull(dir);
+        return dir!.FullName;
     }
 
     [Fact]

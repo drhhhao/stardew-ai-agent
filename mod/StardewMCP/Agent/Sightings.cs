@@ -10,8 +10,8 @@ namespace StardewMCP.Agent;
 /// <summary>
 /// Things worth picking up that a farmer walks past: forage, artifact and seed spots, bushes with berries or nuts and items
 /// lying on the ground, within <see cref="Radius"/> tiles of its route. A player sees them on the screen while walking; an AI
-/// only reads tool results, so walk_to, travel_to and talk_to end with a line listing the ones still there
-/// (<see cref="SightLog"/>). What to do about them stays the AI's choice.
+/// only reads tool results, so the walking and visiting actions (walk_to, travel_to and its semantic successors, the
+/// talk/gift tools) end with a line listing the ones still there (<see cref="SightLog"/>). What to do about them stays the AI's choice.
 /// </summary>
 internal static class Sightings
 {
@@ -20,7 +20,11 @@ internal static class Sightings
 
     private const int ScanEvery = 15;
 
-    private static readonly HashSet<string> Tools = new() { "walk_to", "travel_to", "talk_to" };
+    private static readonly HashSet<string> Tools = new()
+    {
+        "walk_to", "travel_to", "travel_to_location", "travel_to_shop",
+        "talk_to", "talk_to_villager", "give_gift"
+    };
     private static readonly int[] Ticks = new int[Players.Seats];
 
     /// <summary>Whether this tool's result gets the "Seen on the way" line.</summary>

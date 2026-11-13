@@ -15,12 +15,16 @@ namespace StardewMCP.Agent;
 
 /// <summary>
 /// Marnie's ranch (#10): <c>buy_animal</c> buys an animal into a coop or barn, and <c>animals</c> looks after them:
-/// pet, collect the products and fill the troughs with hay.
+/// pet, collect the products and fill the troughs with hay. Both are Legacy (docs/tool-decoupling/README.md phase 2):
+/// the preferred replacements are <c>list_animals_for_sale</c> / <c>purchase_animal</c> and
+/// <c>list_animals</c> / <c>pet_animals</c> / <c>collect_animal_products</c> / <c>feed_animals</c> in Agent/Semantic/AnimalTools.cs,
+/// which reuse the shared bodies in this file so behavior cannot drift.
 ///
 /// Marnie's counter opens <c>PurchaseAnimalsMenu</c>, which needs the mouse on a map of the farm. The tool skips the menu:
 /// it builds the animal like the menu does, hands it to the chosen <see cref="AnimalHouse"/> and pays from the calling farmer's
 /// wallet. Prices and housing come from the game's own animal data (<c>Game1.farmAnimalData</c>), with a built-in table as a
-/// fallback. Care actions walk to the animal and call the game's own pet, tool and hopper code.
+/// fallback. Care actions walk to the animal and call the game's own pet, tool and hopper code, and only ever affect the
+/// animals in the place the farmer is standing in.
 /// </summary>
 public static partial class AgentTools
 {
@@ -29,7 +33,8 @@ public static partial class AgentTools
         new()
         {
             Name = "buy_animal",
-            Description = "Buy a farm animal from Marnie (animal shop, AnimalShop map in the Forest; you must be inside while she is there, about 9:00-16:00). " +
+            Description = "Legacy: split into list_animals_for_sale (browse) and purchase_animal (buy), which the built-in AI prefers. " +
+                          "Buy a farm animal from Marnie (animal shop, AnimalShop map in the Forest; you must be inside while she is there, about 9:00-16:00). " +
                           "type=list (or no type) shows what she sells, the price, the building each animal needs and whether you own one with room. " +
                           "type=<animal> pays from your own wallet and puts a baby animal into a finished Coop or Barn of yours (building picks which one). " +
                           "Chickens live in a Coop, cows in a Barn; Robin builds those (build tool). Young animals mature in a few days.",
@@ -45,12 +50,14 @@ public static partial class AgentTools
                 var t = S(a, "type").Trim();
                 return t.Length == 0 || t.Equals("list", StringComparison.OrdinalIgnoreCase);
             },
+            Legacy = true,
             Run = BuyAnimal
         },
         new()
         {
             Name = "animals",
-            Description = "Look after your farm animals. Without an action it lists them (where they live, pet today or not, product ready) and the hay in the silo. " +
+            Description = "Legacy: split into list_animals (observe) and pet_animals / collect_animal_products / feed_animals (care), " +
+                          "which the built-in AI prefers. Look after your farm animals. Without an action it lists them (where they live, pet today or not, product ready) and the hay in the silo. " +
                           "pet: walks to each animal in the place you are in (the Farm, or inside a coop or barn: travel_to its name) and pets it; pet them every day. " +
                           "collect: picks up eggs and other products from the floor of a coop or barn, and milks cows and goats (Milk Pail) or shears sheep and rabbits (Shears) when they have a product ready. " +
                           "feed: fills the troughs of the coop or barn you are in from the silo's hay (needs a Silo with hay; Marnie sells hay). Animals outside eat grass.",
@@ -65,6 +72,7 @@ public static partial class AgentTools
                 var act = S(a, "action").Trim();
                 return act.Length == 0 || act.Equals("list", StringComparison.OrdinalIgnoreCase);
             },
+            Legacy = true,
             Run = AnimalsTool
         }
     };
@@ -144,7 +152,8 @@ public static partial class AgentTools
         {
             var type = b.buildingType.Value;
             if (BuildingFamily(type) != family || BuildingTier(type) < tier) continue;
-            if (RanchText.DaysOfConstructionLeft(b) > 0 || RanchText.DaysUntilUpgrade(b) > 0) continue;
+            // Like PurchaseAnimalsMenu (!isUnderConstruction()): a building being upgraded still takes animals.
+            if (RanchText.DaysOfConstructionLeft(b) > 0) continue;
             if (b.indoors.Value is not AnimalHouse house) continue;
             homes.Add(new AnimalHome(b, house, house.animals.Values.Count(), RanchReflect.Int(house, "animalLimit") ?? 0));
         }
@@ -180,9 +189,17 @@ public static partial class AgentTools
     private static IEnumerator BuyAnimal(JsonElement a, CallContext c)
     {
         var want = S(a, "type").Trim();
-        var catalog = AnimalCatalog();
-        if (want.Length == 0 || want.Equals("list", StringComparison.OrdinalIgnoreCase)) { c.Result = AnimalShopList(catalog); yield break; }
+        if (want.Length == 0 || want.Equals("list", StringComparison.OrdinalIgnoreCase)) { c.Result = AnimalShopList(AnimalCatalog()); yield break; }
+        yield return PurchaseAnimalBody(a, c, want);
+    }
 
+    /// <summary>
+    /// Buying one animal of the wanted type into a chosen home: shop gate, price, housing pick, adoption and payment.
+    /// Shared by the legacy buy_animal type=&lt;animal&gt; mode and the semantic purchase_animal so behavior cannot drift.
+    /// </summary>
+    private static IEnumerator PurchaseAnimalBody(JsonElement a, CallContext c, string want)
+    {
+        var catalog = AnimalCatalog();
         var spec = FindAnimal(catalog, want);
         if (spec == null) { c.Fail($"Marnie doesn't sell \"{want}\". She sells: {string.Join(", ", catalog.Select(s => s.Name))}."); yield break; }
 
@@ -196,7 +213,7 @@ public static partial class AgentTools
             c.Fail($"A {spec.Name} needs a finished {spec.Required} and you have none. " +
                    (spec.Required.StartsWith("Coop") || spec.Required.StartsWith("Barn")
                        ? "Robin builds it (build tool)."
-                       : "Robin's upgrade of an existing coop or barn to a bigger one is not available in this mod yet."));
+                       : $"Robin upgrades an existing building into one: build(building=\"{spec.Required}\") at her shop (build(building=list) shows the cost and which of your buildings can take it)."));
             yield break;
         }
         var (home, problem) = PickHome(homes, S(a, "building"));
@@ -213,7 +230,7 @@ public static partial class AgentTools
         yield return Ticks(5);
         c.Result = $"Marnie sold you a {spec.Name} named {name} for {spec.Price:N0}g. It lives in the {HomeLabel(home)} ({home.Count + 1}" +
                    (home.Limit > 0 ? $"/{home.Limit}" : "") + " animals now). Money left " + P.Money + "g. " +
-                   "It is a baby and grows up in a few days. Pet it and fill the troughs every day (animals tool).";
+                   "It is a baby and grows up in a few days. Pet it and fill the troughs every day (pet_animals and feed_animals; legacy animals tool).";
     }
 
     private static string AnimalShopList(List<AnimalSpec> catalog)
@@ -231,7 +248,7 @@ public static partial class AgentTools
             }
             sb.AppendLine($"  {s.Name}: {s.Price:N0}g · lives in a {s.Required} · {housing}{(P.Money < s.Price ? $" · you lack {s.Price - P.Money:N0}g" : "")}");
         }
-        sb.Append("buy_animal(type=\"Chicken\", name=\"Clucky\") buys one. A Milk Pail or Shears (for milk and wool) and hay are also sold by Marnie.");
+        sb.Append("purchase_animal(type=\"Chicken\", name=\"Clucky\") buys one (legacy name: buy_animal). A Milk Pail or Shears (for milk and wool) and hay are also sold by Marnie.");
         return sb.ToString();
     }
 
@@ -290,7 +307,7 @@ public static partial class AgentTools
                 yield return FeedAnimals(c);
                 yield break;
             default:
-                c.Fail($"Unknown action \"{action}\". Use list, pet, collect or feed.");
+                c.InvalidArgs($"Unknown action \"{action}\". Use list, pet, collect or feed.", "list", "pet", "collect", "feed");
                 yield break;
         }
     }
@@ -315,15 +332,15 @@ public static partial class AgentTools
                 sb.AppendLine($"  {RanchText.AnimalLabel(t.animal)}{(grp.Key == null ? $" at ({t.animal.TilePoint.X},{t.animal.TilePoint.Y})" : "")}");
         }
         int unpet = mine.Count(t => !t.animal.wasPet.Value);
-        if (unpet > 0) sb.AppendLine($"{unpet} not pet today: go to them and use animals(action=\"pet\").");
+        if (unpet > 0) sb.AppendLine($"{unpet} not pet today: go to them and use pet_animals (legacy: animals action=\"pet\").");
         var hay = RanchReflect.Int(Game1.getFarm(), "piecesOfHay");
         if (hay != null) sb.AppendLine($"Hay in the silo: {hay}.");
-        sb.Append("pet, collect and feed work on the animals in the place you are standing in (the Farm, or inside the coop or barn).");
+        sb.Append("pet_animals, collect_animal_products and feed_animals (legacy: animals) work on the animals in the place you are standing in (the Farm, or inside the coop or barn).");
         return sb.ToString();
     }
 
     private static string NoAnimalsHere() =>
-        $"There are no farm animals in {Loc.Name}. Animals live outside on the Farm or inside a coop or barn: animals lists where (travel_to the building's name).";
+        $"There are no farm animals in {Loc.Name}. Animals live outside on the Farm or inside a coop or barn: list_animals (legacy: animals) lists where (travel_to the building's name).";
 
     /// <summary>The animals to work on: those called <paramref name="name"/> (by name, else by type; any owner), else your own that pass the filter.</summary>
     private static List<FarmAnimal> SelectAnimals(List<FarmAnimal> here, string name, Func<FarmAnimal, bool> filter)
@@ -536,7 +553,7 @@ public static partial class AgentTools
         if (troughs.Count == 0) { c.Fail($"No hay troughs found in {house.Name}."); yield break; }
 
         int hay0 = HayInTroughs(house);
-        if (hay0 >= troughs.Count) { c.Result = $"All {troughs.Count} troughs in {house.Name} already have hay."; yield break; }
+        if (hay0 >= troughs.Count) { c.NoChange($"All {troughs.Count} troughs in {house.Name} already have hay."); yield break; }
 
         var silo = RanchReflect.Int(Game1.getFarm(), "piecesOfHay");
         if (silo != null && silo.Value <= 0)

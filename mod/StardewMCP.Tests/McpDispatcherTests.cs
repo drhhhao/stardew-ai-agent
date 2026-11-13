@@ -75,6 +75,39 @@ public class McpDispatcherTests
         Assert.Equal("0.4.0", response.GetProperty("result").GetProperty("serverInfo").GetProperty("version").GetString());
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Initialize_mentions_the_guide_only_when_it_is_on(bool splitScreen)
+    {
+        bool guide = false;
+        var mcp = new McpDispatcher(SampleTools.All(), () => splitScreen, "0.4.0", () => guide);
+        string Instructions(JsonElement r) => r.GetProperty("result").GetProperty("instructions").GetString()!;
+
+        var off = Instructions(await Call(mcp, new FakeSeat(), "{'jsonrpc':'2.0','id':1,'method':'initialize'}"));
+        Assert.DoesNotContain("guide()", off);
+        guide = true;
+        var on = Instructions(await Call(mcp, new FakeSeat(), "{'jsonrpc':'2.0','id':2,'method':'initialize'}"));
+        Assert.Equal(off + McpDispatcher.GuideInstructions, on);
+        Assert.Contains("Call guide() for the strategy roadmap", on);
+        Assert.Contains("frozen", on);
+    }
+
+    [Fact]
+    public async Task Initialize_mentions_self_defense_only_when_it_is_on()
+    {
+        bool on = false;
+        var mcp = new McpDispatcher(SampleTools.All(), () => true, "0.4.0", selfDefenseOn: () => on);
+        string Instructions(JsonElement r) => r.GetProperty("result").GetProperty("instructions").GetString()!;
+
+        var off = Instructions(await Call(mcp, new FakeSeat(), "{'jsonrpc':'2.0','id':1,'method':'initialize'}"));
+        Assert.DoesNotContain("defends itself", off);
+        on = true;
+        var withDefense = Instructions(await Call(mcp, new FakeSeat(), "{'jsonrpc':'2.0','id':2,'method':'initialize'}"));
+        Assert.Equal(off + McpDispatcher.SelfDefenseInstructions, withDefense);
+        Assert.Contains("no action was running", withDefense);
+    }
+
     [Fact]
     public async Task Initialize_without_a_version_uses_the_fallback()
     {
@@ -171,6 +204,58 @@ public class McpDispatcherTests
         Assert.False(response.TryGetProperty("error", out _));
         Assert.True(response.GetProperty("result").GetProperty("isError").GetBoolean());
         Assert.Equal("Unknown tool teleport", ResultText(response));
+        Assert.Empty(seat.Calls);
+    }
+
+    [Fact]
+    public async Task Calling_without_a_name_is_an_invalid_args_tool_error_not_a_500()
+    {
+        var seat = new FakeSeat();
+        var response = await Call(NewDispatcher(), seat,
+            "{'jsonrpc':'2.0','id':3,'method':'tools/call','params':{'arguments':{}}}");
+
+        Assert.False(response.TryGetProperty("error", out _));
+        Assert.True(response.GetProperty("result").GetProperty("isError").GetBoolean());
+        Assert.Contains("name", ResultText(response));
+        Assert.Empty(seat.Calls);
+    }
+
+    [Fact]
+    public async Task Calling_with_a_non_string_name_is_an_invalid_args_tool_error()
+    {
+        var seat = new FakeSeat();
+        var response = await Call(NewDispatcher(), seat,
+            "{'jsonrpc':'2.0','id':3,'method':'tools/call','params':{'name':7,'arguments':{}}}");
+
+        Assert.False(response.TryGetProperty("error", out _));
+        Assert.True(response.GetProperty("result").GetProperty("isError").GetBoolean());
+        Assert.Contains("name", ResultText(response));
+        Assert.Empty(seat.Calls);
+    }
+
+    [Fact]
+    public async Task Calling_with_non_object_params_is_an_invalid_args_tool_error_not_a_500()
+    {
+        var seat = new FakeSeat();
+        var response = await Call(NewDispatcher(), seat,
+            "{'jsonrpc':'2.0','id':3,'method':'tools/call','params':'look'}");
+
+        Assert.False(response.TryGetProperty("error", out _));
+        Assert.True(response.GetProperty("result").GetProperty("isError").GetBoolean());
+        Assert.Contains("params", ResultText(response));
+        Assert.Empty(seat.Calls);
+    }
+
+    [Fact]
+    public async Task Calling_with_non_object_arguments_is_an_invalid_args_tool_error()
+    {
+        var seat = new FakeSeat();
+        var response = await Call(NewDispatcher(), seat,
+            "{'jsonrpc':'2.0','id':3,'method':'tools/call','params':{'name':'look','arguments':5}}");
+
+        Assert.False(response.TryGetProperty("error", out _));
+        Assert.True(response.GetProperty("result").GetProperty("isError").GetBoolean());
+        Assert.Contains("arguments", ResultText(response));
         Assert.Empty(seat.Calls);
     }
 

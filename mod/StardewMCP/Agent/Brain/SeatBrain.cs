@@ -161,7 +161,7 @@ public sealed class SeatBrain
                 lastThink = resp.Text;
                 Log.Add("think", text: Prompts.Clip(resp.Text, 1200));
             }
-            messages.Add(ChatMessage.Assistant(resp.Text, resp.ToolCalls));
+            messages.Add(ChatMessage.Assistant(resp.Text, resp.ToolCalls, resp.AnthropicContent));
 
             if (resp.ToolCalls.Count == 0)
             {
@@ -191,7 +191,7 @@ public sealed class SeatBrain
                 while (lastResults.Count > 3) lastResults.Dequeue();
                 if (text.Contains(SessionBreaks.Marker))
                     breakNow = true;
-                if (ok && call.Name == "go_to_bed")
+                if (ok && ToolCatalog.IsSleep(call.Name))
                     dayDone = true;
                 Calls++;
             }
@@ -227,7 +227,10 @@ public sealed class SeatBrain
             People: Log.ReadPeople(),
             Lessons: _log.ReadMemoryText(_log.LessonsFile(Id)),
             Plan: Log.ReadPlan(),
-            Notes: _log.ReadMemoryText(_log.NotesFile(Id)));
+            Notes: _log.ReadMemoryText(_log.NotesFile(Id)),
+            Guide: _tools.ContainsKey("guide"),
+            GiftTastes: Knowledge.GiftTastes,
+            SelfDefense: _cfg.SelfDefense);
         return Prompts.System(Prompts.Template(_assetDir), inputs);
     }
 
@@ -275,7 +278,7 @@ public sealed class SeatBrain
                 var r = await _llm.Complete(system, messages, _llmTools, ct);
                 InputTokens += r.InputTokens;
                 OutputTokens += r.OutputTokens;
-                _mon.Log($"[{Id}] {_llm.Model}: {r.ToolCalls.Count} tool call(s), {r.InputTokens}+{r.OutputTokens} tokens, {sw.ElapsedMilliseconds} ms", LogLevel.Trace);
+                _mon.Log($"[{Id}] {_llm.Model}: {r.ToolCalls.Count} tool call(s), {r.InputTokens}+{r.OutputTokens} tokens ({r.CachedInputTokens} cached), {sw.ElapsedMilliseconds} ms", LogLevel.Trace);
                 return r;
             }
             catch (LlmException ex)

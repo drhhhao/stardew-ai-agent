@@ -212,6 +212,40 @@ public class PathfinderTests
         Assert.Null(Route(map, map.Find('S'), new Vector2(4, 1)));
     }
 
+    // ------------------------------------------------------------------ FindPathToNearest (a blocked target)
+
+    [Fact]
+    public void Nearest_route_stops_beside_a_blocked_goal()
+    {
+        var map = new TextGrid("S..#");
+        var route = new Pathfinder().FindPathToNearest(map, map.Find('S'), new Vector2(3, 0));
+        Assert.NotNull(route);
+        Assert.Equal((2, 0), Steps(route!)[^1]);
+        Assert.Equal(2, route!.Count);
+    }
+
+    [Fact]
+    public void Nearest_route_approaches_an_unreachable_goal_instead_of_failing_in_place()
+    {
+        var map = new TextGrid(
+            "S..#G",
+            "...##",
+            ".....");
+        var route = new Pathfinder().FindPathToNearest(map, map.Find('S'), map.Find('G'));
+        Assert.NotNull(route);
+        Assert.Equal((2, 0), Steps(route!)[^1]);
+        AssertValidRoute(map, map.Find('S'), new Vector2(2, 0), route!);
+    }
+
+    [Fact]
+    public void Nearest_route_is_null_when_start_is_already_the_closest_open_tile()
+    {
+        var map = new TextGrid(
+            "S#G",
+            "##.");
+        Assert.Null(new Pathfinder().FindPathToNearest(map, map.Find('S'), map.Find('G')));
+    }
+
     // ------------------------------------------------------------------ AvoidingGrid (re-plan around villagers)
 
     [Fact]

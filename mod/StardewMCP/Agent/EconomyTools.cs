@@ -23,7 +23,7 @@ public static class EconomyTools
             Name = "pay",
             Description = "Send money from your wallet to another player, at any distance (a loan, a debt, a payment for work). They are told right away. Money is not recoverable unless they pay it back.",
             Schema = AgentTools.Obj(new { to = AgentTools.Str("Their name"), amount = AgentTools.Int("Gold to send"), reason = AgentTools.Str("What the payment is for; the receiver sees it") }, "to", "amount"),
-            Instant = true, AppendStatus = false, Run = Pay
+            Instant = true, Mutates = true, Serialized = true, AppendStatus = false, Run = Pay
         }
     };
 

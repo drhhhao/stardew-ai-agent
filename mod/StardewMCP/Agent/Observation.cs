@@ -145,8 +145,9 @@ public static class Observation
                 if (!old.Cells.TryGetValue((x, y), out var before)) { fresh++; continue; }
                 // The farmer's own tile hides what is under it, before and after a move: not a change.
                 if (now.sym == '@' || before.sym == '@') continue;
-                if (before.sym == now.sym && before.label == now.label) continue;
-                var key = $"{Show(before.sym, before.label)} → {Show(now.sym, now.label)}";
+                // A machine's time left ticks down every 10 game minutes: not a change on its own.
+                if (before.sym == now.sym && WorldText.StableLabel(before.label) == WorldText.StableLabel(now.label)) continue;
+                var key = $"{Show(before.sym, WorldText.StableLabel(before.label))} → {Show(now.sym, now.label)}";
                 if (!changes.TryGetValue(key, out var list)) changes[key] = list = new();
                 list.Add((x, y));
                 changed++;

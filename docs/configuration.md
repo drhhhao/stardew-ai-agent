@@ -36,6 +36,17 @@ An `ai` seat takes these fields:
 - **on** (default): the whole world (clock, farmers, villagers) stops while any AI thinks, so slow models cost no game time.
 - **off**: the clock keeps running and the AIs keep up as well as they can. The natural choice when you play P1 yourself.
 
+The freeze is about time, not safety. In a single-player run only the clock is held, so monsters keep
+moving and keep hitting a farmer that stands still, and a slow model paid for thinking in health. So a
+farmer also defends itself while it is between actions: with no action running, a monster that comes
+within two tiles is hit with the best weapon in the inventory (or the pickaxe, for a rock crab still in
+its shell), and once health is at or below `SelfDefenseEatPercent` the farmer eats the best
+health-restoring food it carries. With no food left at 25% health it backs a few tiles away; when
+there is nowhere to go, it keeps swinging instead of standing still. It never chases and never starts
+an action of its own, and it pauses nothing, so it keeps working when other players share the farm.
+The AI is told about it in its next tool result: the bites it took, the hits it received, and why it
+swung at something it did not ask to fight.
+
 ## All settings
 
 | Setting | Default | Meaning |
@@ -46,6 +57,8 @@ An `ai` seat takes these fields:
 | `DailyTokenBudget` | `0` | Built-in AI: tokens (input + output) per seat per day before it stops until the next morning (0 = no limit) |
 | `HttpPort` | `8770` | Port for MCP, overlay, replay and the API |
 | `FreezeTimeWhileThinking` | `true` | Stop the clock while no action is running |
+| `SelfDefense` | `true` | With no action running, hit a monster that comes within two tiles, eat health food when hurt, and back away at 25% with no food (no pause; see [Time modes](#time-modes)) |
+| `SelfDefenseEatPercent` | `40` | Self-defense: eat once health is at or below this percent of the maximum (0 = never eat) |
 | `LogDir` | `""` | Log folder; empty = `logs/` in the mod folder |
 | `AutoLoadSave` | `""` | Save folder to load automatically from the title screen |
 | `ThoughtLanguage` | `""` | Language of the AI's on-screen text (`think`, action reasons, diary), e.g. `"English"`; empty = the game's language. The overlay and replay follow it (see below) |
@@ -53,7 +66,8 @@ An `ai` seat takes these fields:
 | `FishingAssist` | `"perfect"` | How `fish` plays the minigame: `"perfect"` keeps the fish inside the bar; `"natural"` presses the button like a player, so it can lose fish |
 | `DefaultProfession` | `0` | Profession picked at bedtime when the AI hasn't chosen one: 0 = left option, 1 = right |
 | `PlayHeartEvents` | `false` | Let heart events (story cutscenes) play and stop at their questions for `respond`, instead of skipping them. Experimental, see [coverage.md](coverage.md) |
-| `RevealGiftTastes` | `false` | `villagers(name)` shows the game's real gift tastes. Off: a farmer only knows the tastes it found out by gifting |
+| `RevealGiftTastes` | `false` | `villagers(name)` and `villagers(item=X)` show the game's real gift tastes, and the AI's prompt says so. Off: a farmer only knows the tastes it found out by gifting or from hints. `GuideKnowledge` turns this on too. Read at startup |
+| `GuideKnowledge` | `false` | Strategy guide and full game knowledge. Adds the [`guide`](tools.md#game-knowledge-) tool (the pages in `assets/guide/`) and points the AI to it in the built-in AI's prompt and the MCP instructions. Also opens what normal play leaves to discovery: every gift taste (as `RevealGiftTastes`), the Community Center bundles before the Community Center opens (`bundles`), legendary fish before your Fishing level reaches theirs (`fish_info`, `item_info`) and which villager's letter teaches a friendship recipe (`item_info`). Off: the AIs find these out as a player would. Restart the game to apply, also after changing it in the config menu: the tool list and the prompt are built at startup |
 | `RepeatHintAfter` | `3` | Loop guard: add a "try something different" hint when the identical call has failed this many times in a row (0 = off) |
 | `RepeatBlockAfter` | `5` | Loop guard: refuse the Nth identical call in a row without running it when the N-1 before it failed (0 = off) |
 | `NoProgressAfter` | `25` | Loop guard: add a "pick an action" hint after this many calls in a row with no game time, inventory or position change (0 = off) |

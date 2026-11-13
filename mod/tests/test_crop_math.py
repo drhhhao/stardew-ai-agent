@@ -11,6 +11,7 @@ The growth and price numbers below are test inputs, not claims about the game's 
 
 from __future__ import annotations
 
+import math
 import struct
 import unittest
 from typing import NamedTuple, Sequence
@@ -96,6 +97,32 @@ def price_at_quality(base_price: int, quality: int) -> int:
     """C# `(int)(basePrice * (1f + quality * 0.25f))`, with every step rounded to float32 like C#."""
     step = _f32(quality * _f32(0.25))
     return int(_f32(base_price * _f32(1.0 + step)))
+
+
+def growth_boost(fertilizer: float, agriculturist: bool) -> float:
+    boost = _f32(max(fertilizer, 0.0))
+    if agriculturist:
+        boost = _f32(boost + _f32(0.1))
+    return boost
+
+
+def speed_up_phases(days_in_phase: Sequence[int], boost: float) -> list[int]:
+    """Port of HoeDirt.applySpeedIncreases (CropMath.SpeedUpPhases)."""
+    if boost <= 0:
+        return list(days_in_phase)
+    phases = list(days_in_phase) + [99999]
+    total = sum(phases[:-1])
+    cut = math.ceil(_f32(total * _f32(boost)))
+    passes = 0
+    while cut > 0 and passes < 3:
+        for j in range(len(phases)):
+            if (j > 0 or phases[j] > 1) and phases[j] != 99999 and phases[j] > 0:
+                phases[j] -= 1
+                cut -= 1
+            if cut <= 0:
+                break
+        passes += 1
+    return phases[:-1]
 
 
 def shop_price(listed_price: int, object_base_price: int) -> tuple[int, bool]:
@@ -334,6 +361,26 @@ class RecipeTests(unittest.TestCase):
     def test_broken_lines_are_ignored(self) -> None:
         for bad in (None, "", "/Home/1", "388", "388 x", "388 0", "388 -2"):
             self.assertEqual(ingredient_count(bad, "388", 0), (0, False), bad)
+
+
+class SpeedGroTests(unittest.TestCase):
+    STRAWBERRY = (1, 1, 2, 2, 2)
+
+    def test_speed_gro_takes_a_day_off_strawberries(self) -> None:
+        self.assertEqual(speed_up_phases(self.STRAWBERRY, _f32(0.1)), [1, 0, 2, 2, 2])
+        growth = growth_days(speed_up_phases(self.STRAWBERRY, _f32(0.1)))
+        self.assertEqual(plan(0, 13, (True, False, False, False), growth, 4).harvests, 3)
+        self.assertEqual(plan(0, 14, (True, False, False, False), growth, 4).harvests, 2)
+
+    def test_hyper_speed_gro_with_agriculturist(self) -> None:
+        self.assertEqual(speed_up_phases(self.STRAWBERRY, growth_boost(_f32(0.33), True)), [1, 0, 1, 1, 1])
+
+    def test_cut_is_rounded_up(self) -> None:
+        self.assertEqual(growth_days(speed_up_phases((1, 2, 4, 4, 1), _f32(0.1))), 10)
+        self.assertEqual(growth_days(speed_up_phases((2, 7, 7, 7, 5), _f32(0.25))), 21)
+
+    def test_three_passes_at_most(self) -> None:
+        self.assertEqual(speed_up_phases((1, 1, 1, 1), _f32(0.8)), [1, 0, 0, 0])
 
 
 if __name__ == "__main__":

@@ -88,7 +88,7 @@ public class DayStats
     {
         var day = _day;
         if (day == null || !ToolNames.Value.Contains(tool)) return;
-        if (tool == "go_to_bed" && !ok) day.WentToBed = false; // sleeping did not start after all
+        if (ToolCatalog.IsSleep(tool) && !ok) day.WentToBed = false; // sleeping did not start after all
         if (ok || startTotalDays + 1 != day.Day) return;
         day.Failed++;
         day.For(tool).Failed++;
@@ -97,7 +97,7 @@ public class DayStats
             day.FailureKinds[key] = day.FailureKinds.GetValueOrDefault(key) + 1;
     }
 
-    /// <summary>go_to_bed is about to answer the bed's sleep question: the day ends in bed. Takes the bedtime snapshot now.</summary>
+    /// <summary>sleep (go_to_bed) is about to answer the bed's sleep question: the day ends in bed. Takes the bedtime snapshot now.</summary>
     public void OnSleepStart()
     {
         if (_day == null) return;
@@ -105,7 +105,7 @@ public class DayStats
         Snapshot(force: true);
     }
 
-    /// <summary>go_to_bed was woken before the night began: the farmer is up again.</summary>
+    /// <summary>sleep was woken before the night began: the farmer is up again.</summary>
     public void OnSleepCancelled()
     {
         if (_day != null) _day.WentToBed = false;

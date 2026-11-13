@@ -16,12 +16,16 @@ public sealed class AnthropicProvider : ILlmProvider
     private readonly string _apiKey;
     private readonly string _baseUrl;
     private readonly int _maxTokens;
+    private readonly string _effort;
+    private readonly bool _bearer;
 
     public string Name => "anthropic";
     public string Model { get; }
 
-    public AnthropicProvider(HttpClient http, string model, string apiKey, string? baseUrl, int maxTokens)
+    public AnthropicProvider(HttpClient http, string model, string apiKey, string? baseUrl, int maxTokens, string? effort = null, bool bearerAuth = false)
     {
+        _effort = (effort ?? "").Trim().ToLowerInvariant();
+        _bearer = bearerAuth;
         _http = http;
         Model = model;
         _apiKey = apiKey;
@@ -33,7 +37,10 @@ public sealed class AnthropicProvider : ILlmProvider
     {
         var body = BuildBody(system, messages, tools);
         var req = new HttpRequestMessage(HttpMethod.Post, LlmHttp.Join(_baseUrl, "/v1/messages"));
-        req.Headers.Add("x-api-key", _apiKey);
+        if (_bearer)
+            req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + _apiKey);
+        else
+            req.Headers.Add("x-api-key", _apiKey);
         req.Headers.Add("anthropic-version", "2023-06-01");
         var json = await LlmHttp.PostJson(_http, req, body, ct).ConfigureAwait(false);
         return Parse(json);
@@ -60,6 +67,12 @@ public sealed class AnthropicProvider : ILlmProvider
             if (m.Role == "assistant")
             {
                 openUser = null;
+                // Our own earlier reply: send it back exactly as it came (thinking blocks must not change).
+                if (m.AnthropicContent != null && JsonNode.Parse(m.AnthropicContent) is JsonArray { Count: > 0 } original)
+                {
+                    list.Add(new JsonObject { ["role"] = "assistant", ["content"] = original });
+                    continue;
+                }
                 var content = new JsonArray();
                 if (!string.IsNullOrWhiteSpace(m.Text))
                     content.Add(new JsonObject { ["type"] = "text", ["text"] = m.Text });
@@ -99,8 +112,12 @@ public sealed class AnthropicProvider : ILlmProvider
             ["model"] = Model,
             ["max_tokens"] = _maxTokens,
             ["system"] = system,
-            ["messages"] = list
+            ["messages"] = list,
+            // Automatic prompt caching: the system prompt, tools and the day's conversation so far are re-read from cache.
+            ["cache_control"] = new JsonObject { ["type"] = "ephemeral" }
         };
+        if (_effort.Length > 0)
+            body["output_config"] = new JsonObject { ["effort"] = _effort };
         if (toolList.Count > 0)
             body["tools"] = toolList;
         return body;
@@ -111,7 +128,9 @@ public sealed class AnthropicProvider : ILlmProvider
         var r = new LlmResponse { StopReason = json["stop_reason"]?.GetValue<string>() ?? "" };
         var text = new System.Text.StringBuilder();
         if (json["content"] is JsonArray content)
-            foreach (var block in content)
+            r.AnthropicContent = content.ToJsonString();
+        if (json["content"] is JsonArray blocks)
+            foreach (var block in blocks)
             {
                 switch (block?["type"]?.GetValue<string>())
                 {
@@ -129,6 +148,7 @@ public sealed class AnthropicProvider : ILlmProvider
         r.Text = text.ToString();
         r.InputTokens = LlmHttp.Int(json["usage"]?["input_tokens"]);
         r.OutputTokens = LlmHttp.Int(json["usage"]?["output_tokens"]);
+        r.CachedInputTokens = LlmHttp.Int(json["usage"]?["cache_read_input_tokens"]);
         return r;
     }
 }

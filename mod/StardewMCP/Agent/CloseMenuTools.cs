@@ -11,6 +11,9 @@ namespace StardewMCP.Agent;
 /// What close_menu does for the player before it closes a menu that would otherwise lose something:
 /// a letter's quest is accepted (its attached items are handed over by the letter's own exit), and a one-shot
 /// grab menu (fishing treasure, gift, fish pond output) gives up what fits in the inventory. Chests are left alone.
+/// Phase 4A (docs/tool-decoupling/README.md) makes each decision explicit: the helpers below are shared with
+/// dismiss_menu / accept_letter_quest / claim_menu_items in Agent/Semantic/MenuCloseTools.cs; close_menu keeps
+/// its legacy claim-before-close behavior unchanged.
 /// </summary>
 public static partial class AgentTools
 {

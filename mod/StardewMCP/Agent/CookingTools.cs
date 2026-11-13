@@ -12,9 +12,10 @@ using StardewValley.Objects;
 namespace StardewMCP.Agent;
 
 /// <summary>
-/// cook: make dishes from the cooking recipes you know, in a kitchen. It is the craft tool's logic (CraftingTools.cs) with
-/// CraftingRecipe(key, isCookingRecipe: true), and the ingredients come from your pack and from the fridge of the house
-/// you stand in (the fridge and any mini-fridge), as at the game's own stove.
+/// cook (legacy) and the semantic replacements list_dishes / cook_dish (Agent/Semantic/CookingTools.cs, phase 2 of
+/// docs/tool-decoupling/README.md). cook makes dishes from the cooking recipes you know, in a kitchen. It is the craft
+/// tool's logic (CraftingTools.cs) with CraftingRecipe(key, isCookingRecipe: true), and the ingredients come from your
+/// pack and from the fridge of the house you stand in (the fridge and any mini-fridge), as at the game's own stove.
 /// </summary>
 public static partial class AgentTools
 {
@@ -23,10 +24,11 @@ public static partial class AgentTools
         new()
         {
             Name = "cook",
-            Description = "Cook dishes from the cooking recipes you know (costs no energy). You must be inside your farmhouse (or a cabin) with a kitchen, i.e. the house is upgraded once; " +
+            Description = "Legacy: prefer list_dishes and cook_dish. Cook dishes from the cooking recipes you know (costs no energy). You must be inside your farmhouse (or a cabin) with a kitchen, i.e. the house is upgraded once; " +
                           "you walk to the stove yourself. Ingredients are taken from your pack and from the fridge there. " +
                           "cook() lists your cooking recipes with ingredients and how many you can cook right now; cook(recipe, quantity) cooks that many. " +
                           "Dishes restore energy and health: use eat. New recipes come from the TV (watch_tv), villager letters, shops and friendship.",
+            Legacy = true,
             Schema = Obj(new
             {
                 recipe = Str("Dish name, e.g. \"Fried Egg\"; empty or \"list\" lists your cooking recipes"),

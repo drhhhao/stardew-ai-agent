@@ -55,6 +55,18 @@ The time between an AI's last tool result and its next action.
 The whole world (clock, farmers, villagers) standing still while any AI is thinking.
 _Avoid_: pause
 
+**Self-defense**:
+What a farmer does for itself between actions, since a freeze never stops monsters: a monster that comes
+within melee reach is hit with its best weapon, and it eats when health is low. With no food left and
+health nearly gone it backs a few tiles away; otherwise it never walks and never chases, and it starts
+no action, so it is not a freeze and works with other players on the farm.
+_Avoid_: auto-fight, bot combat
+
+**Monster codex**:
+What the `monsters` tool answers: the living monsters on the map with HP, damage, distance and a one-line
+tactic, or one kind's base stats and what works against it.
+_Avoid_: bestiary, monster wiki
+
 **Think timeout**:
 How long a silent AI may hold the world frozen before the world goes on without it.
 
@@ -115,6 +127,36 @@ The game's own handler for an input. Tools call it and never re-implement it.
 
 **Coverage**:
 How far the tools reach each part of the game: works, reachable but untested, or missing.
+
+**Semantic tool**:
+A single-intent tool from the decoupling (docs/tool-decoupling/README.md): a read only reads,
+an action does one named job and carries a required `reason`. Semantic tools live in
+`Agent/Semantic/`; the built-in AI receives only them.
+_Avoid_: mode-switch tool, action parameter for a read
+
+**Legacy**:
+A superseded tool kept callable with its old name and behavior for existing MCP/HTTP clients
+(the built-in AI does not receive it). Marked `legacy` in `/api/contract`; never deleted or
+renamed.
+
+**ZeroTime**:
+A tool that never advances game time (the v2 contract flag `zeroTime`, same meaning as the
+v1 flag `instant`).
+
+**ReadOnly**:
+A tool that never writes game state (the v2 contract flag `readOnly`). Every ReadOnly tool is
+ZeroTime, but not the other way: zero-time state mutations such as `pay`, `give` and `name`
+write state without costing game time.
+
+**Serialized**:
+A tool that always runs in the serialized action queue, in call order (the v2 contract flag
+`serialized`). Zero-time mutations stay serialized so they keep their order with the seat's
+actions; observations run in the observation lane.
+
+**No change**:
+A success result in which nothing actually changed, reported with the `no_change` reason code
+and the result's `changed` flag (v2 result contract). Distinguishes a satisfied repeat call
+from a retry loop for the loop guard.
 
 ## Talk and perception
 

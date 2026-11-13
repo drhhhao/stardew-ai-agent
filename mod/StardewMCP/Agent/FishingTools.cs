@@ -671,6 +671,8 @@ internal sealed class BarRun
     public bool PrevPressing;
     public bool SawTreasure;
     public bool TreasureCaught;
+    /// <summary>The one-time choice at the chest's appearance; not re-evaluated, or the bar ping-pongs between fish and chest.</summary>
+    public bool TreasureDecided;
     public float LastProgress;
     public string Mode = "";
 }
@@ -738,7 +740,15 @@ internal static class BobberDriver
         if (bar.treasureCaught)
             run.TreasureCaught = true;
 
-        run.Chasing = BobberMath.ChaseTreasure(bar.treasure, bar.treasureAppearTimer, bar.treasureCaught, progress, run.Chasing);
+        // One decision per cast. Re-deciding every tick made the bar jump between the fish and a far chest forever.
+        if (!run.TreasureDecided && bar.treasure && bar.treasureAppearTimer <= 0f && !bar.treasureCaught &&
+            progress >= BobberMath.TreasureStartProgress)
+        {
+            run.TreasureDecided = true;
+            run.Chasing = BobberMath.TreasureWorthChasing(progress, fish, bar.treasurePosition, h);
+        }
+        if (run.Chasing && (bar.treasureCaught || !bar.treasure))
+            run.Chasing = false;
 
         bool natural = AgentTools.FishingNatural(rt.Config) && FishingPatches.Applied && !FishingPatches.Disabled;
         if (natural)

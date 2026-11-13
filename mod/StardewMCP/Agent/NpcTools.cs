@@ -9,6 +9,7 @@ using StardewModdingAPI;
 using StardewValley;
 using StardewValley.Menus;
 using StardewValley.Monsters;
+using StardewValley.Objects;
 using SObject = StardewValley.Object;
 
 namespace StardewMCP.Agent;
@@ -158,17 +159,6 @@ internal static class NpcInfo
         return Match(Everyone(), s => s.Name, s => s.DisplayName, name);
     }
 
-    /// <summary>
-    /// The NPC called <paramref name="name"/> as this screen has them, for what does not change as they walk around (gift
-    /// tastes). Their place may be out of date on a farmhand screen: <see cref="Find"/> says where they are.
-    /// </summary>
-    public static NPC? ByName(string name)
-    {
-        name = name.Trim();
-        if (name.Length == 0) return null;
-        return AgentTools.FestivalActor(name) ?? Match(Local(), n => n.Name, n => n.displayName, name);
-    }
-
     /// <summary>The NPC called <paramref name="name"/> on <paramref name="loc"/>, the map this screen's farmer stands on, or null: the one to walk up to and talk to.</summary>
     public static NPC? Here(string name, GameLocation? loc)
     {
@@ -249,17 +239,10 @@ internal static class NpcInfo
 
     // ------------------------------------------------------------------ gift tastes
 
-    /// <summary>The game's taste codes: 0 love, 2 like, 4 dislike, 6 hate, anything else neutral.</summary>
-    public static string TasteWord(int code) => code switch { 0 => "loved", 2 => "liked", 4 => "disliked", 6 => "hated", _ => "neutral" };
+    /// <summary>The game's taste codes: 0 love, 2 like, 4 dislike, 6 hate, 7 Stardrop Tea (a love), anything else neutral.</summary>
+    public static string TasteWord(int code) => GiftTasteMath.Word(code);
 
-    public static string TasteVerb(int code) => code switch
-    {
-        0 => "loved",
-        2 => "liked",
-        4 => "disliked",
-        6 => "hated",
-        _ => "was neutral about"
-    };
+    public static string TasteVerb(int code) => GiftTasteMath.Normalize(code) == GiftTasteMath.Neutral ? "was neutral about" : GiftTasteMath.Word(code);
 
     public static string ItemName(string id)
     {
@@ -274,6 +257,191 @@ internal static class NpcInfo
     }
 
     public static string Signed(int n) => n >= 0 ? $"+{n}" : n.ToString();
+
+    // ------------------------------------------------------------------ gift tastes from the game data (PLAN B7)
+
+    /// <summary>One object a farmer can give, with a made item to ask the game's taste rules about.</summary>
+    private sealed record Giftable(string QualifiedId, string Name, string Group, SObject Item);
+
+    private static IDictionary<string, StardewValley.GameData.Objects.ObjectData>? _objectsFrom;
+    private static object? _trinketsFrom;
+    private static List<Giftable> _giftables = new();
+    private static List<(string Id, string Display, string Name)> _objectNames = new();
+    private static readonly Dictionary<string, NPC> ScratchNpcs = new();
+
+    /// <summary>
+    /// Every object and trinket a farmer can give (<see cref="GiftTasteMath.Listable"/>), built again when the game reloads its
+    /// object or trinket data. Also fills <see cref="_objectNames"/> (qualified ids) for villagers(item=X).
+    /// </summary>
+    private static List<Giftable> Giftables()
+    {
+        var data = Game1.objectData;
+        var trinkets = DataLoader.Trinkets(Game1.content);
+        if (ReferenceEquals(data, _objectsFrom) && ReferenceEquals(trinkets, _trinketsFrom)) return _giftables;
+        var gifts = new List<Giftable>();
+        var names = new List<(string, string, string)>();
+        var others = new List<(string, string, string)>();
+        foreach (var (id, d) in data)
+        {
+            if (d == null) continue;
+            var qid = "(O)" + id;
+            var name = ItemName(qid);
+            bool listable = GiftTasteMath.Listable(id, name, d.Type, d.Category, d.CanBeGivenAsGift);
+            // Real gifts first, so a name shared with a map object (the Stone you carry, not the rocks you break) finds the gift.
+            (listable ? names : others).Add((qid, name, d.Name ?? id));
+            if (listable && TasteItem(qid) is { } obj && !obj.bigCraftable.Value)
+                gifts.Add(new Giftable(qid, name, GiftTasteMath.GroupOf(d.Category, d.Type), obj));
+        }
+        foreach (var id in trinkets.Keys)
+        {
+            var qid = "(TR)" + id;
+            var name = ItemName(qid);
+            bool listable = GiftTasteMath.Listable(id, name, null, GiftTasteMath.TrinketCategory, true);
+            (listable ? names : others).Add((qid, name, id));
+            if (listable && TasteItem(qid) is { } trinket)
+                gifts.Add(new Giftable(qid, name, GiftTasteMath.GroupOf(GiftTasteMath.TrinketCategory, null), trinket));
+        }
+        _giftables = gifts;
+        _objectNames = names.Concat(others).ToList();
+        _objectsFrom = data;
+        _trinketsFrom = trinkets;
+        return gifts;
+    }
+
+    /// <summary>
+    /// An item to ask the game's taste rules about, or null. A trinket is made with a fixed seed: ItemRegistry would draw its
+    /// seed from Game1.random, and a lookup must not move the game's random numbers.
+    /// </summary>
+    private static SObject? TasteItem(string qualifiedId)
+    {
+        if (qualifiedId.StartsWith("(TR)", StringComparison.Ordinal))
+            return ItemRegistry.Exists(qualifiedId) ? new StardewValley.Objects.Trinkets.Trinket(qualifiedId[4..], 0) : null;
+        return ItemRegistry.Create(qualifiedId, allowNull: true) as SObject;
+    }
+
+    /// <summary>The qualified id of an unqualified id from Farmer.giftedItems: an object, else a trinket, else null.</summary>
+    private static string? GiftedQualifiedId(string id)
+    {
+        if (id.StartsWith('(')) return ItemRegistry.Exists(id) ? id : null;
+        if (ItemRegistry.Exists("(O)" + id)) return "(O)" + id;
+        return ItemRegistry.Exists("(TR)" + id) ? "(TR)" + id : null;
+    }
+
+    /// <summary>
+    /// A bare NPC with the villager's name, to ask the game's own taste rules. NPC.getGiftTasteForThisItem reads only the
+    /// name and the game data, so it answers like the real villager, on any screen and wherever they are; kept per name.
+    /// </summary>
+    private static NPC TasteNpc(string name)
+    {
+        if (!ScratchNpcs.TryGetValue(name, out var npc))
+            ScratchNpcs[name] = npc = new NPC { Name = name };
+        return npc;
+    }
+
+    /// <summary>The game's taste code of <paramref name="villager"/> (internal name) for an item.</summary>
+    public static int Taste(string villager, Item item) => TasteNpc(villager).getGiftTasteForThisItem(item);
+
+    /// <summary>Whether the game takes gifts for this NPC, as NPC.CanReceiveGifts: can befriend, in Data/NPCGiftTastes, CanReceiveGifts.</summary>
+    public static bool TakesGifts(NpcSpot s) =>
+        s.CanSocialize && Game1.NPCGiftTastes.ContainsKey(s.Name) && (!NPC.TryGetData(s.Name, out var cd) || cd.CanReceiveGifts);
+
+    /// <summary>Villagers this farmer can befriend who take gifts (<see cref="TakesGifts"/>), sorted by shown name.</summary>
+    private static List<NpcSpot> GiftTakers() =>
+        Social().Where(TakesGifts).OrderBy(s => s.DisplayName, StringComparer.OrdinalIgnoreCase).ToList();
+
+    /// <summary>
+    /// Qualified ids of the items in the farmer's pack and in every chest and fridge they can open. Mini-shipping bins are left
+    /// out: what is in them is sold overnight (and asking one for a farmer's items would create their slot).
+    /// </summary>
+    private static HashSet<string> Owned(Farmer who)
+    {
+        var ids = new HashSet<string>();
+        foreach (var it in who.Items)
+            if (it != null) ids.Add(it.QualifiedItemId);
+        void Add(Chest chest)
+        {
+            foreach (var it in chest.GetItemsForPlayer(who.UniqueMultiplayerID))
+                if (it != null) ids.Add(it.QualifiedItemId);
+        }
+        Utility.ForEachLocation(loc =>
+        {
+            foreach (var obj in loc.objects.Values)
+                if (obj is Chest chest && ChestLedger.IsStorage(chest)) Add(chest);
+            if (loc.GetFridge(false) is { } fridge) Add(fridge);
+            return true;
+        });
+        return ids;
+    }
+
+    /// <summary>
+    /// Copy what the game itself has shown this farmer into their book: tastes of gifts given (also before this mod or by hand)
+    /// and the hints in dialogue and secret notes (Farmer.giftedItems, filled by onGiftGiven and revealGiftTaste). Always on:
+    /// it is what the farmer already knows in game. Ids there are unqualified (objects, and trinkets given as gifts).
+    /// </summary>
+    public static void MergeRevealed(Farmer who)
+    {
+        var gifted = who.giftedItems;
+        if (gifted == null || gifted.Count == 0) return;
+        var book = NpcKnowledge.Book(who);
+        var learned = new List<(string, string, int)>();
+        foreach (var (villager, items) in gifted)
+        {
+            if (string.IsNullOrEmpty(villager) || items == null || !Game1.NPCGiftTastes.ContainsKey(villager)) continue;
+            foreach (var id in items.Keys)
+            {
+                var qid = GiftedQualifiedId(id);
+                if (qid == null || NpcKnowledge.TryTaste(book, villager, qid, out _)) continue;
+                if (TasteItem(qid) is { } obj)
+                    learned.Add((villager, qid, Taste(villager, obj)));
+            }
+        }
+        if (learned.Count > 0) NpcKnowledge.Merge(who, learned);
+    }
+
+    /// <summary>"Loves: ... | Likes: ... | Dislikes: ... | Hates: ..." for one villager from the game data, [have] on kept items.</summary>
+    public static string TasteSummary(Farmer who, string villager)
+    {
+        var owned = Owned(who);
+        var npc = TasteNpc(villager);
+        var items = Giftables().Select(g => new GiftItem(g.Name, g.Group, npc.getGiftTasteForThisItem(g.Item), owned.Contains(g.QualifiedId)));
+        return GiftTasteMath.Summary(items);
+    }
+
+    /// <summary>villagers(item=X): who loves, likes, dislikes or hates one object; only what the farmer knows unless <paramref name="all"/>.</summary>
+    public static (bool Ok, string Text) WhoLikes(Farmer who, string query, bool all, NpcSpot? only)
+    {
+        Giftables();
+        int at = GiftTasteMath.Match(_objectNames, query);
+        if (at < 0)
+            return (false, $"No item called \"{query}\". Gifts are objects (crops, forage, fish, food, artisan goods, minerals...) and trinkets; check the spelling.");
+        var (qid, display, internalName) = _objectNames[at];
+        if (SpecialGifts.Contains(internalName))
+            return (true, $"{display} is a special item, not a normal gift: bouquet(name) and mermaid_pendant(name) use it.");
+        if (GiftTasteMath.NotAGiftUse(qid) is { } use)
+            return (true, $"{display} is not a gift: {use}.");
+        if (TasteItem(qid) is not { } obj || obj.bigCraftable.Value || !obj.canBeGivenAsGift())
+            return (true, $"{display} can't be given as a gift.");
+        if (only != null && !TakesGifts(only))
+            return (true, $"{only.DisplayName} does not take gifts.");
+
+        TryMergeRevealed(who);
+        var takers = only != null ? new List<NpcSpot> { only } : GiftTakers();
+        var have = Owned(who).Contains(qid) ? $" You have {display} (pack or chest)." : "";
+        if (all && only != null)
+            return (true, $"{only.DisplayName}: {GiftTasteMath.Word(Taste(only.Name, obj))} ({display} as a gift, game data).{have}");
+        if (all)
+        {
+            var tastes = takers.Select(s => (s.DisplayName, Taste(s.Name, obj)));
+            return (true, $"{display} as a gift (game data): {GiftTasteMath.Who(tastes, complete: true)}.{have} {GiftTasteMath.PointsNote}");
+        }
+        var names = takers.ToDictionary(s => s.Name, s => s.DisplayName);
+        var known = NpcKnowledge.KnownFor(NpcKnowledge.Book(who), qid).Where(k => names.ContainsKey(k.Villager)).Select(k => (names[k.Villager], k.Taste)).ToList();
+        if (known.Count == 0)
+            return (true, $"You don't know {(only != null ? only.DisplayName + "'s" : "anyone's")} taste for {display} yet: a gift shows it (give_gift), " +
+                          $"and so do hints villagers drop in conversation.{have}");
+        var rest = only != null ? "" : " Everyone else: unknown until you give it to them.";
+        return (true, $"What you know about {display} as a gift (your gifts and the game's hints): {GiftTasteMath.Who(known, complete: false)}.{rest}{have}");
+    }
 
     // ------------------------------------------------------------------ text for the model
 
@@ -296,24 +464,27 @@ internal static class NpcInfo
             sb.AppendLine(Line(met));
         var unmet = infos.Where(i => !i.Met).ToList();
         if (unmet.Count > 0)
-            sb.AppendLine("Not met yet (talk_to introduces you): " + string.Join(", ", unmet.Select(i => $"{i.DisplayName} ({i.Location} {i.X},{i.Y})")));
+            sb.AppendLine("Not met yet (talk_to_villager introduces you): " + string.Join(", ", unmet.Select(i => $"{i.DisplayName} ({i.Location} {i.X},{i.Y})")));
         sb.AppendLine("Romance: villagers marked \"can date\" can be dated and married. bouquet(name) at 8+ hearts starts dating, mermaid_pendant(name) at 10+ hearts proposes " +
                       "(it needs an upgraded house). propose(to) asks another player to marry you.");
-        sb.Append("villagers(name) shows one villager's gift tastes and what dating or marriage still needs; talk_to(name) finds them and talks.");
+        sb.Append("villagers(name) shows one villager's gift tastes and what dating or marriage still needs; villagers(item=X) who loves or hates an item; " +
+                  "talk_to_villager(name) finds them and talks; give_gift(name, item) gives a gift.");
         return sb.ToString();
     }
 
     /// <summary>
-    /// Details for one villager: state, your last gift, what other players were seen doing, tastes found out so far.
-    /// <paramref name="npc"/> is this screen's copy of them, for the game's own gift tastes (RevealGiftTastes); null leaves those out.
+    /// Details for one villager: state, your last gift, what other players were seen doing, their gift tastes and their
+    /// reaction to what you carry. <paramref name="revealTastes"/> (<see cref="Knowledge.GiftTastes"/>) shows every taste from
+    /// the game data; otherwise only what this farmer found out (their gifts and the game's hints, <see cref="MergeRevealed"/>).
     /// </summary>
-    public static string Detail(Farmer who, NpcSpot spot, NPC? npc, string viewerSeat, bool revealTastes)
+    public static string Detail(Farmer who, NpcSpot spot, string viewerSeat, bool revealTastes)
     {
         var v = Of(who, spot);
+        TryMergeRevealed(who);
         var book = NpcKnowledge.Book(who);
         var sb = new StringBuilder();
         sb.AppendLine(Line(v));
-        if (!v.Met) sb.AppendLine("You have not met them yet: talk_to introduces you.");
+        if (!v.Met) sb.AppendLine("You have not met them yet: talk_to_villager introduces you.");
         sb.AppendLine(Romance.Requirements(who, v));
 
         if (book.LastGift.TryGetValue(spot.Name, out var last))
@@ -321,39 +492,63 @@ internal static class NpcInfo
         var seen = NpcKnowledge.SeenText(spot.Name, viewerSeat);
         if (seen != null) sb.AppendLine("Seen: " + seen + ".");
 
-        if (book.Tastes.TryGetValue(spot.Name, out var known) && known.Count > 0)
+        bool takesGifts = TakesGifts(spot);
+        if (revealTastes && takesGifts)
         {
-            sb.AppendLine("What you found out about their tastes by gifting:");
+            try
+            {
+                sb.AppendLine("Gift tastes (game data; [have] = in your pack or a chest): " + TasteSummary(who, spot.Name));
+                sb.AppendLine(GiftTasteMath.PointsNote);
+            }
+            catch (Exception ex)
+            {
+                sb.AppendLine($"Gift tastes could not be read from the game data ({ex.GetType().Name}: {ex.Message}); the game data may differ from what the mod expects.");
+                revealTastes = false;
+            }
+        }
+        else if (book.Tastes.TryGetValue(spot.Name, out var known) && known.Count > 0)
+        {
+            sb.AppendLine("What you know about their tastes (your gifts and the game's hints):");
             foreach (var word in new[] { "loved", "liked", "neutral", "disliked", "hated" })
             {
                 var names = known.Where(kv => TasteWord(kv.Value) == word).Select(kv => ItemName(kv.Key)).OrderBy(x => x).ToList();
                 if (names.Count > 0) sb.AppendLine($"  {word}: {string.Join(", ", names)}");
             }
         }
-        else
-            sb.AppendLine("You do not know any of their tastes yet: gifts show them, and other players may tell you (or lie).");
+        else if (takesGifts)
+            sb.AppendLine("You do not know any of their tastes yet: gifts show them, villagers drop hints, and other players may tell you (or lie).");
 
         var stacks = who.Items.OfType<SObject>().GroupBy(i => i.QualifiedItemId).ToList();
-        if (stacks.Count > 0)
+        if (stacks.Count > 0 && takesGifts)
         {
-            revealTastes &= npc != null;
-            sb.AppendLine(revealTastes ? "Their reaction to what you carry (RevealGiftTastes is on, straight from the game data):" : "Their reaction to what you carry:");
+            sb.AppendLine(revealTastes ? "Their reaction to what you carry (game data):" : "Their reaction to what you carry:");
             foreach (var g in stacks)
             {
                 var first = g.First();
                 string taste;
                 if (SpecialGifts.Contains(first.Name))
                     taste = "a special item, not a normal gift";
+                else if (GiftTasteMath.NotAGiftUse(g.Key) is { } use)
+                    taste = "not a gift: " + use;
+                else if (first.bigCraftable.Value || !first.canBeGivenAsGift())
+                    taste = "can't be given";
                 else if (revealTastes)
-                    taste = TasteWord((int)npc!.getGiftTasteForThisItem(first));
+                    taste = TasteWord(Taste(spot.Name, first));
                 else if (NpcKnowledge.TryTaste(book, spot.Name, g.Key, out var code))
-                    taste = TasteWord(code) + " (you gave it before)";
+                    taste = TasteWord(code) + " (known)";
                 else
                     taste = "unknown (give one to find out)";
                 sb.AppendLine($"  {first.DisplayName} x{g.Sum(i => i.Stack)}: {taste}");
             }
         }
         return sb.ToString().TrimEnd();
+    }
+
+    /// <summary><see cref="MergeRevealed"/> that never breaks the tool: the book just stays as it was.</summary>
+    public static void TryMergeRevealed(Farmer who)
+    {
+        try { MergeRevealed(who); }
+        catch (Exception) { /* a data mismatch leaves the book as it was */ }
     }
 
     // ------------------------------------------------------------------ places
@@ -375,6 +570,48 @@ internal static class NpcInfo
         var npc = Find(key);
         if (npc != null && Game1.getLocationFromName(npc.Location) is { } there)
             return (there.Name, $"{npc.DisplayName} was in {WhereIs(npc)} when you set off; they may have moved.");
+        return (null, "");
+    }
+
+    /// <summary>Maps that are a shop: travel_to_shop accepts these by name (its keeper aliases cover the rest).</summary>
+    public static readonly HashSet<string> ShopMaps = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "SeedShop", "Blacksmith", "ScienceHouse", "AnimalShop", "FishShop", "Saloon",
+        "SandyHouse", "Club", "JojaMart", "Hospital", "AdventureGuild"
+    };
+
+    /// <summary>
+    /// Like <see cref="ResolvePlace"/> but never a person (the phase-4B travel_to_location): a real map first,
+    /// then a late-game area alias from <see cref="AreaAliases"/>. A shop keeper's or villager's name resolves
+    /// to null — those belong to travel_to_shop and the talk/gift tools.
+    /// </summary>
+    public static (string? Map, string Note) ResolveStaticPlace(string input)
+    {
+        input = input.Trim();
+        if (input.Length == 0) return (null, "");
+        if (Game1.getLocationFromName(input) != null) return (input, "");
+
+        var key = input.EndsWith("'s", StringComparison.OrdinalIgnoreCase) ? input[..^2] : input;
+        if (AreaAliases.Contains(key) && PlaceAliases.TryGetValue(key, out var area) && Game1.getLocationFromName(area) != null)
+            return (area, "");
+        return (null, "");
+    }
+
+    /// <summary>
+    /// A destination for travel_to_shop (phase 4B): a known shop map from <see cref="ShopMaps"/>, or a keeper
+    /// alias from <see cref="PlaceAliases"/> that resolves to one. An arbitrary villager — or a map that is not
+    /// a shop — resolves to null; Note says which keeper was assumed.
+    /// </summary>
+    public static (string? Map, string Note) ResolveShopPlace(string input)
+    {
+        input = input.Trim();
+        if (input.Length == 0) return (null, "");
+        if (Game1.getLocationFromName(input) != null)
+            return ShopMaps.Contains(input) ? (input, "") : (null, "");
+
+        var key = input.EndsWith("'s", StringComparison.OrdinalIgnoreCase) ? input[..^2] : input;
+        if (PlaceAliases.TryGetValue(key, out var shop) && ShopMaps.Contains(shop) && Game1.getLocationFromName(shop) != null)
+            return (shop, AreaAliases.Contains(key) ? "" : $"{key} works in {shop}.");
         return (null, "");
     }
 
@@ -420,7 +657,9 @@ internal static class NpcInfo
     }
 }
 
-/// <summary>villagers() and the people-aware talk_to (#9). New tools live here, registered in <see cref="AgentTools.All"/>.</summary>
+/// <summary>villagers() and the people-aware talk_to (#9; Legacy since phase 3 of docs/tool-decoupling/README.md — the
+/// built-in AI gets talk_to_villager and give_gift, whose Run bodies live in Agent/Semantic/SocialInteractionTools.cs and
+/// share this file's TalkToVillagerCore). New tools live here, registered in <see cref="AgentTools.All"/>.</summary>
 public static partial class AgentTools
 {
     internal static List<ToolDef> VillagerTools() => new()
@@ -430,18 +669,28 @@ public static partial class AgentTools
             Name = "villagers",
             Description = "Everyone you can befriend: where they are right now (map and tile), hearts and friendship points, whether you already talked to them today, " +
                           "gifts given today and this week (max 1 per day and 2 per week), birthday (flagged when it is today or within 3 days), whether you can date them and whether you are dating or married. " +
-                          "With name: also what dating or marriage still needs, your last gift to them, what you found out about their tastes and what they would make of the items you carry. " +
-                          "Tastes are discovered by giving gifts, nobody knows them from the start. Costs no game time.",
-            Schema = Obj(new { name = Str("Optional villager name for details, e.g. Abigail") }),
+                          "With name: also what dating or marriage still needs, your last gift to them, their gift tastes and what they would make of the items you carry. " +
+                          "With item: who loves, likes, dislikes or hates that item (with name too: just that villager). " +
+                          (Knowledge.GiftTastes
+                              ? "Gift tastes come straight from the game data: every love, like, dislike and hate, items you keep in your pack or chests marked [have]. "
+                              : "Tastes are discovered: a gift shows the villager's taste, and so do hints villagers drop; nobody knows them from the start. ") +
+                          "Costs no game time.",
+            Schema = Obj(new
+            {
+                name = Str("Optional villager name for details, e.g. Abigail"),
+                item = Str("Optional item name: who loves or hates it as a gift, e.g. Diamond")
+            }),
             Instant = true, AppendStatus = false,
             Run = VillagersTool
         },
         new()
         {
             Name = "talk_to",
-            Description = "Find a villager, walk up to them and talk. Optionally give them an item from your inventory as a gift. " +
-                          "Someone walking somewhere is followed and talked to as soon as you are next to them (a corner tile is close enough). " +
-                          "If they are on another map you travel there first (go=false: just tell me where they are). " +
+            Legacy = true,
+            Description = "Legacy mode-switch entry: finds a villager, walks up to them, talks and optionally gives a gift (gift_item). " +
+                          "The built-in AI uses the single-intent tools instead: talk_to_villager (talk only) and give_gift (gift with a " +
+                          "required item). Someone walking somewhere is followed and talked to as soon as you are next to them (a corner " +
+                          "tile is close enough). If they are on another map you travel there first (go=false: just tell me where they are). " +
                           "Reports where they were, your friendship points before and after, their first line and the reaction to a gift. " +
                           "Talking counts once a day; at most 1 gift per day and 2 per week. Time spent travelling is game time. " +
                           "With a fellow farmer's name: walks up to them when they are on your map; farmers talk with say.",
@@ -469,18 +718,26 @@ public static partial class AgentTools
     private static IEnumerator VillagersTool(JsonElement a, CallContext c)
     {
         var name = S(a, "name").Trim();
-        if (name.Length == 0)
+        var item = S(a, "item").Trim();
+        NpcSpot? spot = null;
+        if (name.Length > 0)
         {
-            c.Result = NpcInfo.Roster(P);
+            spot = NpcInfo.Find(name);
+            if (spot == null)
+            {
+                c.Fail(FarmerHint(name) ?? $"No villager called \"{name}\". Call villagers() without a name for the list.");
+                yield break;
+            }
+        }
+        if (item.Length > 0)
+        {
+            (bool ok, string text) r;
+            try { r = NpcInfo.WhoLikes(P, item, Knowledge.GiftTastes, spot); }
+            catch (Exception ex) { r = (false, $"villagers could not read the gift tastes from the game data ({ex.GetType().Name}: {ex.Message}). The game data may differ from what the mod expects."); }
+            if (r.ok) c.Result = r.text; else c.Fail(r.text);
             yield break;
         }
-        var spot = NpcInfo.Find(name);
-        if (spot == null)
-        {
-            c.Fail(FarmerHint(name) ?? $"No villager called \"{name}\". Call villagers() without a name for the list.");
-            yield break;
-        }
-        c.Result = NpcInfo.Detail(P, spot, NpcInfo.ByName(spot.Name), Rt.Log.Player, Config.RevealGiftTastes);
+        c.Result = spot == null ? NpcInfo.Roster(P) : NpcInfo.Detail(P, spot, Rt.Log.Player, Knowledge.GiftTastes);
     }
 
     private static bool NpcFlag(JsonElement a, string name, bool def)
@@ -503,7 +760,7 @@ public static partial class AgentTools
         if (gift == null)
         {
             return f.TalkedToToday
-                ? $"You already talked to {npc.DisplayName} today: talking gives friendship once a day. Give a gift (gift_item) or come back tomorrow."
+                ? $"You already talked to {npc.DisplayName} today: talking gives friendship once a day. Give a gift (give_gift) or come back tomorrow."
                 : null;
         }
         // A bouquet or Mermaid's Pendant is not an ordinary gift (#53): the game decides whether it is accepted today.
@@ -524,7 +781,7 @@ public static partial class AgentTools
     private static string? FarmerHint(string name) =>
         SocialTools.OtherFarmer(name) is { } mate
             ? $"{SocialTools.Label(mate)} is a fellow farmer, not a villager. Farmers talk with say: find them, and once they are on your screen say(text=...) is heard " +
-              $"(talk_to {SocialTools.Label(mate)} walks you up to them when they are on the same map as you)."
+              $"(talk_to_villager {SocialTools.Label(mate)} walks you up to them when they are on the same map as you)."
             : null;
 
     /// <summary>
@@ -542,12 +799,12 @@ public static partial class AgentTools
         if (!SameMap(them))
         {
             c.Fail(Reasons.NotHere, $"{label} is a fellow farmer and is not on this map. Farmers talk with say, which they hear only when you are on their screen: " +
-                                    "go and find them, then talk_to them again or say(text=...).");
+                                    "go and find them, then talk_to_villager them again or say(text=...).");
             yield break;
         }
         if (!go)
         {
-            c.Result = $"{label} is a fellow farmer on this map. Farmers talk with say, not talk_to: say(text=...) is heard when you are on their screen.";
+            c.Result = $"{label} is a fellow farmer on this map. Farmers talk with say, not talk_to_villager: say(text=...) is heard when you are on their screen.";
             yield break;
         }
         for (int leg = 0; leg < 6; leg++)
@@ -568,13 +825,31 @@ public static partial class AgentTools
         }
         if (Dist(P.TilePoint, them!.TilePoint) > 3)
         {
-            c.Fail(Reasons.NoPath, $"Couldn't catch up with {label}. Try talk_to again, or say(text=...): it is heard while they are on your screen.");
+            c.Fail(Reasons.NoPath, $"Couldn't catch up with {label}. Try talk_to_villager again, or say(text=...): it is heard while they are on your screen.");
             yield break;
         }
-        c.Result = $"You are next to {label} now. Farmers talk with say, not talk_to: call say(text=...) now and they will hear you.";
+        c.Result = $"You are next to {label} now. Farmers talk with say, not talk_to_villager: call say(text=...) now and they will hear you.";
     }
 
+    /// <summary>
+    /// Legacy talk_to entry (mode-switch: talk, or talk + gift via gift_item). Reads its optional gift from the
+    /// argument object and hands both intents to the shared <see cref="TalkToVillagerCore"/> path; the semantic
+    /// tools call that path directly with a plain string, never a synthesized argument object.
+    /// </summary>
     private static IEnumerator TalkToNpc(JsonElement a, CallContext c)
+    {
+        var gift = S(a, "gift_item").Trim();
+        yield return TalkToVillagerCore(a, c, gift.Length > 0 ? gift : null);
+    }
+
+    /// <summary>
+    /// The one find-approach-talk-gift path behind talk_to, talk_to_villager and give_gift
+    /// (docs/tool-decoupling/README.md phase 3): the same villager lookup, walk-up and the game's own
+    /// check-at action, so behavior cannot drift between the legacy and the semantic tools. <paramref name="gift"/>
+    /// is the gift item name from the caller, or null for a pure talk — the talk_to_villager path always
+    /// passes null, so a talk can never look up, offer or report a gift.
+    /// </summary>
+    private static IEnumerator TalkToVillagerCore(JsonElement a, CallContext c, string? gift)
     {
         var name = S(a, "name").Trim();
         if (name.Length == 0) { c.Fail("name is empty. villagers() lists who you can talk to."); yield break; }
@@ -594,8 +869,7 @@ public static partial class AgentTools
 
         Item? giftItem = null;
         int giftSlot = -1;
-        var gift = S(a, "gift_item").Trim();
-        if (gift.Length > 0)
+        if (gift != null && gift.Length > 0)
         {
             giftSlot = FindItem(gift, it => it is SObject);
             if (giftSlot < 0) { c.Fail($"No \"{gift}\" in inventory to gift."); yield break; }
@@ -624,7 +898,7 @@ public static partial class AgentTools
                 if (!go)
                 {
                     c.Fail($"{spot.DisplayName} is not on this map ({Loc.Name}). {spot.DisplayName} is in {NpcInfo.WhereIs(spot)}. " +
-                           $"travel_to {there.Name}, or call talk_to with go=true to be taken there.");
+                           $"travel_to {there.Name}, or call talk_to_villager with go=true to be taken there.");
                     yield break;
                 }
                 var trip = new CallContext();
@@ -754,7 +1028,7 @@ public static partial class AgentTools
             if (Game1.activeClickableMenu != null)
             {
                 StopWalk();
-                c.Fail(Reasons.MenuOpen, "A menu or dialogue opened on the way: deal with it (respond or close_menu), then call talk_to again.");
+                c.Fail(Reasons.MenuOpen, "A menu or dialogue opened on the way: deal with it (respond or close_menu), then call talk_to_villager again.");
                 yield break;
             }
             var npc = Loc == loc ? NpcInfo.Here(name, loc) : null;

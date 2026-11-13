@@ -75,19 +75,30 @@ public static partial class AgentTools
         int slot = FindItem(name, it => ClothingSlot(it) != null);
         if (slot < 0) { c.Fail($"No hat, shirt or pants called \"{name}\" in your inventory.\n{WardrobeText()}"); yield break; }
         yield return WaitIdle();
-        var item = P.Items[slot];
+        if (PutOnClothing(P.Items[slot], slot, "You put on", c))
+            yield return Ticks(5);
+    }
+
+    /// <summary>
+    /// The clothing swap both wear and equip use: the piece's slot field is set, the old piece takes the new one's
+    /// inventory slot (like the inventory page), UpdateClothing applies the look, and the wear log entry is written.
+    /// <paramref name="verb"/> starts the result sentence ("You put on" / "Equipped"). No yields, so it can run
+    /// inside equip's try/catch.
+    /// </summary>
+    private static bool PutOnClothing(Item item, int slot, string verb, CallContext c)
+    {
         var kind = ClothingSlot(item)!;
         var field = kind == "hat" ? "hat" : kind == "shirt" ? "shirtItem" : "pantsItem";
         var old = FunnyReflect.Value(P, field) as Item;
 
         // Swap like the equipment slots of the inventory page: the old piece takes the new piece's place.
-        if (!FunnyReflect.SetValue(P, field, item)) { c.Fail($"Could not put on {item.DisplayName}: this game version has no {field} slot I can set."); yield break; }
+        if (!FunnyReflect.SetValue(P, field, item)) { c.Fail($"Could not put on {item.DisplayName}: this game version has no {field} slot I can set."); return false; }
         P.Items[slot] = old!;
         FunnyReflect.Call(P, "UpdateClothing");
-        yield return Ticks(5);
 
         var was = old != null ? $" (took off {old.DisplayName})" : "";
         Rt.Log.Add("event", "wear", $"{P.Name} put on {item.DisplayName}", new { slot = kind, item = item.DisplayName, replaced = old?.DisplayName });
-        c.Result = $"You put on {item.DisplayName} as your {kind}{was}.";
+        c.Result = $"{verb} {item.DisplayName} as your {kind}{was}.";
+        return true;
     }
 }

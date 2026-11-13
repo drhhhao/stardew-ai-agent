@@ -68,7 +68,7 @@ public static partial class AgentTools
 
     private static IEnumerator Dismount(JsonElement a, CallContext c)
     {
-        if (P.mount == null) { c.Result = "You are not riding."; yield break; }
+        if (P.mount == null) { c.NoChange("You are not riding."); yield break; }
         var name = P.mount.displayName;
         P.mount.checkAction(P, Loc); // the action button while riding gets off
         for (int i = 0; i < 150 && P.mount != null; i++) yield return null;

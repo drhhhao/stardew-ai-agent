@@ -51,10 +51,19 @@ public static class ConfigMenu
         api.AddNumberOption(manifest, () => config.DailyTokenBudget, v => config.DailyTokenBudget = v,
             () => "Daily token budget", () => "Built-in AI: once a seat has used this many tokens (input + output) in one day it stops until the next morning and the others play on. 0 = no limit.", 0);
 
+        api.AddBoolOption(manifest, () => config.GuideKnowledge, v => config.GuideKnowledge = v,
+            () => "Strategy guide and full knowledge",
+            () => "Give the AIs the guide(topic) strategy guide and the game's data the upstream play leaves to discovery (all gift tastes, bundle contents before the Community Center opens, legendary fish). Restart the game to apply.");
+
         api.AddSectionTitle(manifest, () => "Time");
         api.AddBoolOption(manifest, () => config.FreezeTimeWhileThinking, v => config.FreezeTimeWhileThinking = v,
             () => "Freeze the world while an AI thinks",
             () => "On: the clock and everyone stop while any AI is between actions (a slow model costs no game time, but you stand still too). Off: the world keeps running and the AIs have to keep up.");
+        api.AddBoolOption(manifest, () => config.SelfDefense, v => config.SelfDefense = v,
+            () => "Defend the farmer while its AI thinks",
+            () => "A freeze never stops monsters: with no action running, a monster that comes within reach is hit with the best weapon, and the farmer eats when hurt. Nothing is paused, so it also works with other players on the farm.");
+        api.AddNumberOption(manifest, () => config.SelfDefenseEatPercent, v => config.SelfDefenseEatPercent = v,
+            () => "Self-defense: eat below (%)", () => "Eat health-restoring food once health is at or below this percent of the maximum. 0 = never eat.", 0, 99, 5);
         api.AddNumberOption(manifest, () => config.ThinkTimeoutSeconds, v => config.ThinkTimeoutSeconds = v,
             () => "Thinking timeout (seconds)", () => "An AI that thinks longer than this stops holding the world frozen. 0 = never.", 0, 900, 15);
 

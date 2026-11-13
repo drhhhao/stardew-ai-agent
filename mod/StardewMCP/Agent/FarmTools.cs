@@ -45,8 +45,16 @@ public static partial class AgentTools
                       "forage, and debris (weeds, stones, twigs, stumps, boulders). Counts come with bounding boxes. Costs no game time. Start your farm day with it.",
         Schema = Obj(new { }),
         Instant = true,
-        Run = (a, c) => Instant(c, FarmSummary())
+        Run = (a, c) => FarmSummaryRun(c)
     };
+
+    /// <summary>farm_summary: the machine line first (a farmhand screen asks the host screen for it, a tick), then the map.</summary>
+    private static IEnumerator FarmSummaryRun(CallContext c)
+    {
+        string machines = "";
+        yield return MachineTools.SummaryLine(line => machines = line);
+        c.Result = FarmSummary(machines);
+    }
 
     private static ToolDef WaterAllTool() => new()
     {
@@ -230,7 +238,7 @@ public static partial class AgentTools
         return Math.Max(days, 0);
     }
 
-    private static string FarmSummary()
+    private static string FarmSummary(string machines)
     {
         var loc = Loc;
         int w = loc.Map.Layers[0].LayerWidth, h = loc.Map.Layers[0].LayerHeight;
@@ -353,6 +361,8 @@ public static partial class AgentTools
         var can = P.Items.OfType<WateringCan>().FirstOrDefault();
         sb.AppendLine(can == null ? "Watering can: you have none." : $"Watering can: {can.WaterLeft}/{can.waterCanMax} water.");
         sb.AppendLine(water is Point wt ? $"Nearest water tile: ({wt.X},{wt.Y}), {waterDist} tiles away." : $"Nearest water tile: none on {loc.Name}.");
+        // the whole farm, its buildings and the farmhouse, not only this map
+        if (machines.Length > 0) sb.AppendLine(machines);
 
         if (debris.Count == 0)
             sb.Append("Debris: none.");

@@ -12,20 +12,24 @@ using StardewValley.Objects;
 namespace StardewMCP.Agent;
 
 /// <summary>
-/// The menu input. menu() reads the open menu; menu(action) clicks it like a player through a small adapter
-/// per menu family. Every action is a click on the menu's own buttons and slots, or typing into its own text
-/// box, so the game itself moves the items, warps and pays.
+/// The generic menu fallback. menu() reads the open menu; menu(action) clicks it like a player through a small
+/// adapter per menu family. Every action is a click on the menu's own buttons and slots, or typing into its own
+/// text box, so the game itself moves the items, warps and pays. Known jobs have semantic tools in
+/// Agent/Semantic/MenuTools.cs; menu stays for menus they do not cover.
 /// </summary>
 public static partial class AgentTools
 {
     private static ToolDef MenuTool() => new()
     {
         Name = "menu",
-        Description = "Read or use the open menu: chests, fridge, shipping bin, fishing treasure, mine elevator, jukebox, number and name entry, and any other menu by its buttons. " +
-                      "menu() shows what it holds and which actions work (game time stays frozen). menu(action=...) clicks it like a player: " +
-                      "take / put an item between it and your inventory (count: default the whole stack; quality: only that quality), choose an option (a mine floor, a song), " +
-                      "amount types a number and presses OK (e.g. money to send), type enters a name and presses OK, ok, cancel, " +
-                      "click presses a button that menu() lists by its label.",
+        Description = "Fallback for menus that have no semantic tool: read the open menu and click it by its own buttons. " +
+                      "Prefer the semantic tools instead: read_menu, list_chest, list_containers, store_items, take_items, " +
+                      "choose_mine_floor, choose_menu_option, set_menu_amount, confirm_menu, name (naming), and the interact " +
+                      "replacements (talk_to_villager, give_gift, load_machine, use_held_item, open_container, read_sign). " +
+                      "menu() shows what the open menu holds and which actions work (game time stays frozen). menu(action=...) clicks it like a player: " +
+                      "take / put an item between it and your inventory (count: default the whole stack; quality: only that quality), " +
+                      "choose an option (a mine floor, a song), amount types a number and presses OK (e.g. money to send), " +
+                      "ok, cancel, click presses a button that menu() lists by its label. Naming an animal or building uses the name tool.",
         Schema = Obj(new
         {
             action = new { type = "string", @enum = new[] { "take", "put", "choose", "amount", "type", "ok", "cancel", "click" }, description = "Omit to read the menu" },
@@ -62,7 +66,12 @@ public static partial class AgentTools
             ("click", _) => ClickLabel(menu, a, c),
             _ => null
         };
-        if (run == null) { c.Fail($"\"{action}\" doesn't work in {MenuName(menu)}. {Actions(menu)}"); yield break; }
+        if (run == null)
+        {
+            c.InvalidArgs($"\"{action}\" doesn't work in {MenuName(menu)}. {Actions(menu)}",
+                "take", "put", "choose", "amount", "type", "ok", "cancel", "click");
+            yield break;
+        }
         yield return run;
         if (!c.Ok) yield break;
         yield return Ticks(10);
@@ -284,11 +293,14 @@ public static partial class AgentTools
 
     // ------------------------------------------------------------------ choosers
 
-    private static IEnumerator ChooseFloor(MineElevatorMenu m, JsonElement a, CallContext c)
+    private static IEnumerator ChooseFloor(MineElevatorMenu m, JsonElement a, CallContext c) =>
+        ChooseFloor(m, S(a, "option"), c);
+
+    private static IEnumerator ChooseFloor(MineElevatorMenu m, string option, CallContext c)
     {
-        var want = new string(S(a, "option").Where(char.IsDigit).ToArray());
+        var want = new string(option.Where(char.IsDigit).ToArray());
         var floor = m.elevators.FirstOrDefault(e => e.name == want);
-        if (floor == null) { c.Fail($"No floor \"{S(a, "option")}\". Floors: {string.Join(", ", m.elevators.Select(e => e.name))}"); yield break; }
+        if (floor == null) { c.Fail($"No floor \"{option}\". Floors: {string.Join(", ", m.elevators.Select(e => e.name))}"); yield break; }
         var from = Loc;
         Click(m, floor);
         yield return Ticks(30);
@@ -304,10 +316,13 @@ public static partial class AgentTools
     }
 
     /// <summary>Step the list with its arrow button until the option shows, then press OK.</summary>
-    private static IEnumerator ChooseFromList(ChooseFromListMenu m, JsonElement a, CallContext c)
+    private static IEnumerator ChooseFromList(ChooseFromListMenu m, JsonElement a, CallContext c) =>
+        ChooseFromList(m, S(a, "option"), c);
+
+    private static IEnumerator ChooseFromList(ChooseFromListMenu m, string option, CallContext c)
     {
         var labels = ListLabels(m);
-        var want = S(a, "option").Trim();
+        var want = option.Trim();
         int target = labels.FindIndex(l => l.Equals(want, StringComparison.OrdinalIgnoreCase));
         if (target < 0 && want.Length > 0) target = labels.FindIndex(l => l.Contains(want, StringComparison.OrdinalIgnoreCase));
         if (target < 0) { c.Fail($"No option \"{want}\". Options: {string.Join(" | ", labels)}"); yield break; }
@@ -331,12 +346,14 @@ public static partial class AgentTools
         yield return null; // the menu's update() reads the box
     }
 
-    private static IEnumerator Amount(NumberSelectionMenu m, JsonElement a, CallContext c)
+    private static IEnumerator Amount(NumberSelectionMenu m, JsonElement a, CallContext c) =>
+        Amount(m, I(a, "value", int.MinValue), c);
+
+    private static IEnumerator Amount(NumberSelectionMenu m, int value, CallContext c)
     {
         var r = Rt.Helper.Reflection;
         int min = r.GetField<int>(m, "minValue").GetValue(), max = r.GetField<int>(m, "maxValue").GetValue();
         int price = r.GetField<int>(m, "price").GetValue();
-        int value = I(a, "value", int.MinValue);
         if (value < min || value > max) { c.Fail($"value must be {min}-{max}."); yield break; }
         if (price > 0 && (long)price * value > P.Money) { c.Fail($"{value} x {price}g is more than your {P.Money}g."); yield break; }
 

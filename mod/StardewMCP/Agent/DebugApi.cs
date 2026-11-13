@@ -38,7 +38,9 @@ public static class DebugApi
     public static Dictionary<string, ToolDef> All()
     {
         ToolDef Op(string name, ToolRunner run, bool needsWorld = true) =>
-            new() { Name = name, Description = "debug", Schema = new { }, Instant = true, NeedsWorld = needsWorld, AppendStatus = false, Mail = false, Run = run };
+            // Debug ops are smoke-test hooks, not observations: they take game time and the action lane (the lane rule
+            // is ToolCatalog.UseObservationLane, which never routes a debug call to the observation lane anyway).
+            new() { Name = name, Description = "debug", Schema = new { }, NeedsWorld = needsWorld, AppendStatus = false, Mail = false, Run = run };
 
         return new[]
         {

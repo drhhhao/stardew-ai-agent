@@ -23,6 +23,12 @@ public class SeatConfig
     /// <summary>Optional endpoint override, e.g. http://localhost:11434/v1 for Ollama with Brain "openai".</summary>
     public string BaseUrl { get; set; } = "";
 
+    /// <summary>"anthropic" only: thinking effort ("low", "medium", "high", "xhigh", "max"); empty = the model's default.</summary>
+    public string Effort { get; set; } = "";
+
+    /// <summary>"anthropic" only: send ApiKey as "Authorization: Bearer" (gateways and auth tokens) instead of "x-api-key".</summary>
+    public bool BearerAuth { get; set; } = false;
+
     /// <summary>Farmhand name (P2-P4); empty = FarmhandNames / "P{N}".</summary>
     public string Name { get; set; } = "";
 
@@ -82,6 +88,17 @@ public class ModConfig
 
     /// <summary>Stop the in-game clock while no agent action is running (the AI is thinking). Starts with the seat's first AI contact, so a seat nobody plays never holds the clock.</summary>
     public bool FreezeTimeWhileThinking { get; set; } = true;
+
+    /// <summary>
+    /// Keep an AI's farmer alive while it is between actions (thinking): when no action runs and a monster is within
+    /// reach, the farmer swings with its best weapon, and it eats health-restoring food once health is at or below
+    /// <see cref="SelfDefenseEatPercent"/>. The world is not paused for this: the monsters keep moving, the farmer just
+    /// keeps fighting. Off = the AI alone decides, and a slow model standing in the Mines takes hits.
+    /// </summary>
+    public bool SelfDefense { get; set; } = true;
+
+    /// <summary>Self-defense: eat health-restoring food once health is at or below this percent of the maximum (0 = never).</summary>
+    public int SelfDefenseEatPercent { get; set; } = 40;
 
     /// <summary>Folder for per-day JSONL logs and diaries. Empty = "logs" inside the mod folder.</summary>
     public string LogDir { get; set; } = "";
@@ -199,6 +216,14 @@ public class ModConfig
     /// gift tastes are discovered by giving gifts (and by what other players tell you). See NpcKnowledge.cs.
     /// </summary>
     public bool RevealGiftTastes { get; set; } = false;
+
+    /// <summary>
+    /// Strategy guide and full game knowledge: registers guide(topic) (assets/guide/*.md), tells the AI about it in the
+    /// prompt, and turns on the knowledge the upstream design leaves to discovery (all gift tastes, bundle contents before
+    /// the Community Center opens, legendary fish, friendship recipe sources). Off = upstream "find it out yourself" play.
+    /// Implies <see cref="RevealGiftTastes"/>. Restart the game to apply.
+    /// </summary>
+    public bool GuideKnowledge { get; set; } = false;
 
     /// <summary>
     /// Session breaks (#30): game times (HHMM) at which a seat's AI is told to continue in a new session, so old maps and

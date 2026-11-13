@@ -22,9 +22,10 @@ public static partial class AgentTools
         new()
         {
             Name = "craft",
-            Description = "Craft items from the crafting recipes you know, using ingredients in your inventory (costs no energy). " +
-                          "craft() lists your recipes with their ingredients and how many you can make right now. craft(recipe, quantity) makes that many " +
-                          "(one craft can make several items, e.g. torches). Crafted machines, chests, sprinklers and fences are inventory items: put them in the world with place. " +
+            Description = "Legacy: prefer list_recipes (lists your recipes with ingredients and how many you can make right now) and " +
+                          "craft_item (makes a named recipe). craft stays callable for old clients: craft() lists your recipes, " +
+                          "craft(recipe, quantity) crafts that many from ingredients in your inventory (costs no energy; one craft can make " +
+                          "several items, e.g. torches). Crafted machines, chests, sprinklers and fences are inventory items: put them in the world with place. " +
                           "Cooking recipes are not included: dishes are made with cook.",
             Schema = Obj(new
             {
@@ -33,6 +34,7 @@ public static partial class AgentTools
                 reason = Str(ReasonDesc)
             }),
             InstantFor = a => { var r = S(a, "recipe").Trim(); return r.Length == 0 || r.Equals("list", StringComparison.OrdinalIgnoreCase); },
+            Legacy = true,
             Run = Craft
         },
         new()
@@ -56,18 +58,26 @@ public static partial class AgentTools
 
     private static IEnumerator Craft(JsonElement a, CallContext c)
     {
-        CraftingRecipe.InitShared();
         var want = S(a, "recipe").Trim();
         if (want.Length == 0 || want.Equals("list", StringComparison.OrdinalIgnoreCase))
         {
+            CraftingRecipe.InitShared();
             c.Result = RecipeList();
             yield break;
         }
+        yield return CraftItems(a, c, want);
+    }
 
+    /// <summary>Make up to quantity of the known crafting recipe called <paramref name="want"/>: the shared loop behind the legacy
+    /// craft(recipe, ...) action and the semantic craft_item, so the two catalogs cannot drift. Fails when the recipe is unknown;
+    /// stops early with a partial-success note when ingredients or pack space run out.</summary>
+    private static IEnumerator CraftItems(JsonElement a, CallContext c, string want)
+    {
+        CraftingRecipe.InitShared();
         var key = FindRecipeKey(want);
         if (key == null)
         {
-            c.Fail($"You don't know a recipe called \"{want}\". craft() lists the recipes you know.");
+            c.Fail($"You don't know a recipe called \"{want}\". list_recipes lists the recipes you know.");
             yield break;
         }
 
@@ -130,7 +140,8 @@ public static partial class AgentTools
         return partial;
     }
 
-    /// <summary>The recipes you know. With <paramref name="cooking"/> the cooking recipes; <paramref name="extra"/> adds ingredients outside the pack (the fridge).</summary>
+    /// <summary>The recipes you know. With <paramref name="cooking"/> the cooking recipes; <paramref name="extra"/> adds ingredients outside the pack (the fridge).
+    /// Shared by the legacy craft/cook list modes and the semantic list_recipes / list_dishes.</summary>
     private static string RecipeList(bool cooking = false, IList<Item>? extra = null)
     {
         var ready = new List<string>();

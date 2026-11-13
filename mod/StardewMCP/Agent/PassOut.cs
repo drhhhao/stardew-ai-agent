@@ -172,7 +172,7 @@ public static class PassOut
         t.Stamina = p.Stamina;
         t.MaxStamina = p.MaxStamina;
         t.InBed = p.isInBed.Value;
-        t.GoToBed = rt.CurrentTool == "go_to_bed";
+        t.GoToBed = ToolCatalog.IsSleep(rt.CurrentTool);
         if (p.health <= 0) t.ZeroHp = true; // stays set for the rest of the day
         t.LostSig = Signature(p.itemsLostLastDeath);
 

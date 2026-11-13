@@ -17,13 +17,41 @@ public class ApiContractTests
     public void Contract_lists_every_tool_sorted_with_its_lane()
     {
         var tools = SampleTools.All().Values.ToList();
+        tools.Add(new ToolDef
+        {
+            Name = "pay", Description = "Pay another farmer.", Schema = AgentTools.Obj(new { }),
+            Instant = true, Mutates = true, Serialized = true,
+            Run = (a, ctx) => Array.Empty<object>().GetEnumerator()
+        });
         var c = ApiContract.Build("1.2.3", tools, new[] { "ok", "no_path" }, new ApiContract.Timing(540, 300, 360));
 
         Assert.Equal(ApiContract.ApiVersion, c.ApiVersion);
         Assert.Equal("1.2.3", c.ModVersion);
         Assert.Equal(tools.Select(t => t.Name).OrderBy(n => n, StringComparer.Ordinal), c.Tools.Select(t => t.Name));
-        Assert.True(c.Tools.Single(t => t.Name == "look").Instant);
-        Assert.False(c.Tools.Single(t => t.Name == "walk_to").Instant);
+
+        var look = c.Tools.Single(t => t.Name == "look");
+        Assert.True(look.Instant);
+        Assert.True(look.ReadOnly);   // a pure observation: no write, no game time
+        Assert.True(look.ZeroTime);
+        Assert.False(look.Serialized);
+
+        var walk = c.Tools.Single(t => t.Name == "walk_to");
+        Assert.False(walk.Instant);
+        Assert.False(walk.ReadOnly);
+        Assert.False(walk.ZeroTime);
+        Assert.True(walk.Serialized); // every call runs in the serialized action queue
+
+        var menu = c.Tools.Single(t => t.Name == "menu"); // lane depends on the arguments (InstantFor)
+        Assert.True(menu.InstantFor);
+        Assert.False(menu.ReadOnly);
+        Assert.False(menu.ZeroTime);
+        Assert.False(menu.Serialized);
+
+        var pay = c.Tools.Single(t => t.Name == "pay");
+        Assert.True(pay.ZeroTime);
+        Assert.False(pay.ReadOnly);
+        Assert.True(pay.Serialized);
+
         Assert.Equal(new[] { "ok", "no_path" }, c.Reasons);
     }
 
@@ -33,12 +61,16 @@ public class ApiContractTests
         var c = ApiContract.Build("0.4.0", SampleTools.All().Values, new[] { "ok" }, new ApiContract.Timing(540, 300, 360));
         using var doc = JsonDocument.Parse(JsonSerializer.Serialize(c, Camel));
         var root = doc.RootElement;
-        Assert.Equal(1, root.GetProperty("apiVersion").GetInt32());
+        Assert.Equal(ApiContract.ApiVersion, root.GetProperty("apiVersion").GetInt32());
         Assert.Equal("0.4.0", root.GetProperty("modVersion").GetString());
         var tool = root.GetProperty("tools")[0];
         Assert.True(tool.TryGetProperty("name", out _));
         Assert.True(tool.TryGetProperty("instant", out _));
         Assert.True(tool.TryGetProperty("instantFor", out _));
+        Assert.True(tool.TryGetProperty("legacy", out _));
+        Assert.True(tool.TryGetProperty("readOnly", out _));
+        Assert.True(tool.TryGetProperty("zeroTime", out _));
+        Assert.True(tool.TryGetProperty("serialized", out _));
         var timing = root.GetProperty("timing");
         Assert.Equal(540, timing.GetProperty("maxHeldSeconds").GetInt32());
         Assert.Equal(300, timing.GetProperty("thinkTimeoutSeconds").GetInt32());

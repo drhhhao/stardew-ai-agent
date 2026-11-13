@@ -12,12 +12,14 @@ using StardewValley.Menus;
 namespace StardewMCP.Agent;
 
 /// <summary>
-/// special_orders: the Special Orders board in Pelican Town. The board is opened with the game's own tile
-/// action (press the action button on its tile) and an order is accepted by clicking the board's own Accept
-/// button, so the game does its own bookkeeping. Order details (name, requester, objectives, rewards) are read
-/// by reflection: the SpecialOrder type is not named here, so a renamed member shows up as "?" instead of
-/// breaking the build.
-/// <para>The accepted orders are reachable for a future quests tool (#14) through
+/// Special Orders board tools. <c>special_orders</c> is the legacy compatibility entry (its action switch covers
+/// all three modes); the semantic replacements are <c>list_special_orders</c> (walk to the board and show what is
+/// posted), <c>accept_special_order</c> (take one by index) and <c>active_special_orders</c> (instant read of the
+/// accepted orders). The board is opened with the game's own tile action (press the action button on its tile) and
+/// an order is accepted by clicking the board's own Accept button, so the game does its own bookkeeping. Order
+/// details (name, requester, objectives, rewards) are read by reflection: the SpecialOrder type is not named here,
+/// so a renamed member shows up as "?" instead of breaking the build.
+/// <para>The accepted orders are listed by the active_special_orders tool through
 /// <see cref="ActiveSpecialOrdersText"/>.</para>
 /// </summary>
 public static partial class AgentTools
@@ -25,7 +27,8 @@ public static partial class AgentTools
     private static ToolDef SpecialOrdersTool() => new()
     {
         Name = "special_orders",
-        Description = "The Special Orders board in Pelican Town (it opens in the fall of year 1): timed jobs from villagers that pay a reward. " +
+        Description = "Legacy: prefer list_special_orders, accept_special_order and active_special_orders. " +
+                      "The Special Orders board in Pelican Town (it opens in the fall of year 1): timed jobs from villagers that pay a reward. " +
                       "action=list walks to the board, opens it and shows the orders posted now: requester, what they want, reward and time limit. " +
                       "action=accept takes one by its index (0 = left, 1 = right); an accepted order is a job for the whole team. " +
                       "action=active shows the orders already accepted, with progress and days left (no walking). Leave the board with close_menu.",
@@ -35,35 +38,49 @@ public static partial class AgentTools
             index = Int("accept: the order's index as list shows it"),
             reason = Str(ReasonDesc)
         }),
+        Legacy = true,
         InstantFor = a => S(a, "action").Trim().Equals("active", StringComparison.OrdinalIgnoreCase),
         Run = SpecialOrdersRun
     };
 
+    /// <summary>The semantic replacements (list_special_orders, accept_special_order, active_special_orders) are
+    /// registered centrally in Agent/SemanticTools.cs; their Run bodies are in Agent/Semantic/SpecialOrderTools.cs
+    /// and share the board logic below with the legacy tool.</summary>
     private static IEnumerator SpecialOrdersRun(JsonElement a, CallContext c)
     {
         var action = S(a, "action").Trim().ToLowerInvariant();
         if (action.Length == 0) action = "list";
         if (action == "active") { c.Result = ActiveSpecialOrdersText(); yield break; }
-        if (action != "list" && action != "accept") { c.Fail("action must be list, accept or active."); yield break; }
+        if (action != "list" && action != "accept") { c.InvalidArgs("action must be list, accept or active.", "list", "accept", "active"); yield break; }
         int index = I(a, "index", -1);
-        if (action == "accept" && index < 0) { c.Fail("accept needs the order's index (0 or 1); see special_orders(action=list)."); yield break; }
+        if (action == "accept" && index < 0) { c.Fail("accept needs the order's index (0 or 1); see list_special_orders."); yield break; }
+        if (action == "list") { yield return SoListBoard(c); yield break; }
+        yield return SoAcceptBoard(index, c);
+    }
 
+    /// <summary>Opens the board and reports the orders posted on it (shared by special_orders action=list and list_special_orders).</summary>
+    private static IEnumerator SoListBoard(CallContext c)
+    {
+        yield return SoOpenBoard(c);
+        if (!c.Ok) yield break;
+        var board = Game1.activeClickableMenu!;
+        yield return Ticks(5);
+        c.Result = SoBoardText(board);
+    }
+
+    /// <summary>Opens the board and accepts the order at <paramref name="index"/> (shared by special_orders action=accept and accept_special_order).</summary>
+    private static IEnumerator SoAcceptBoard(int index, CallContext c)
+    {
         yield return SoOpenBoard(c);
         if (!c.Ok) yield break;
         var board = Game1.activeClickableMenu!;
         yield return Ticks(5);
 
-        if (action == "list")
-        {
-            c.Result = SoBoardText(board);
-            yield break;
-        }
-
         var orders = SoBoardOrders(board);
         if (index >= orders.Count || orders[index] == null) { c.Fail($"No order at index {index}. {SoBoardText(board)}"); yield break; }
         var order = orders[index]!;
         var key = SoTxt(order, "questKey");
-        if (SoActiveOrders().Any(o => SoTxt(o, "questKey") == key)) { c.Fail("That order is already active. See special_orders(action=active)."); yield break; }
+        if (SoActiveOrders().Any(o => SoTxt(o, "questKey") == key)) { c.Fail("That order is already active. See active_special_orders()."); yield break; }
 
         var button = SoAcceptButton(board, index);
         if (button == null) { c.Fail("The Accept button was not found on this board. Try menu() and menu(action=click, option=...)."); yield break; }
@@ -78,10 +95,10 @@ public static partial class AgentTools
         for (int i = 0; i < 180 && !SoActiveOrders().Any(o => SoTxt(o, "questKey") == key); i++) yield return null;
         if (!SoActiveOrders().Any(o => SoTxt(o, "questKey") == key))
         {
-            c.Fail("Pressed Accept, but the order did not become active. Check special_orders(action=active).");
+            c.Fail("Pressed Accept, but the order did not become active. Check active_special_orders().");
             yield break;
         }
-        c.Result = $"Accepted {summary}\nIt is now a job for the whole team. Track it with special_orders(action=active). The board is still open: close_menu to leave.";
+        c.Result = $"Accepted {summary}\nIt is now a job for the whole team. Track it with active_special_orders(). The board is still open: close_menu to leave.";
     }
 
     // ------------------------------------------------------------------ opening the board
@@ -178,11 +195,11 @@ public static partial class AgentTools
             var offer = button == null ? "" : button.visible ? " [Accept available]" : " [Accept not offered right now]";
             sb.AppendLine($"index {i} ({(i == 0 ? "left" : "right")}){offer}: {SoDescribe(orders[i]!, posted: true)}");
         }
-        sb.Append("Take one with special_orders(action=accept, index=N), or leave with close_menu.");
+        sb.Append("Take one with accept_special_order(index=N), or leave with close_menu.");
         return sb.ToString();
     }
 
-    // ------------------------------------------------------------------ active orders (for quests, #14)
+    // ------------------------------------------------------------------ active orders
 
     /// <summary>The team's accepted special orders that are still running.</summary>
     private static List<object> SoActiveOrders()
@@ -193,14 +210,14 @@ public static partial class AgentTools
 
     /// <summary>
     /// Text for every accepted special order with objectives, progress, reward and days left. Public so the
-    /// quests tool (#14) can include it.
+    /// active_special_orders tool (and the status footer) can include it.
     /// </summary>
     public static string ActiveSpecialOrdersText()
     {
         List<object> active;
         try { active = SoActiveOrders(); }
         catch (Exception ex) { return $"Could not read the special orders: {ex.Message}"; }
-        if (active.Count == 0) return "You have no accepted special orders. The board in Town (special_orders action=list) posts new ones.";
+        if (active.Count == 0) return "You have no accepted special orders. The board in Town (list_special_orders) posts new ones.";
         var sb = new StringBuilder("Active special orders (shared by the whole team):");
         foreach (var o in active) sb.Append("\n  ").Append(SoDescribe(o, posted: false));
         return sb.ToString();
@@ -215,7 +232,7 @@ public static partial class AgentTools
             var left = SoDaysLeft(o);
             return $"{SoName(o)}{(left != null ? $" ({left} days left)" : "")}";
         });
-        return $"Special orders: {string.Join(" | ", parts)} (details: special_orders action=active)";
+        return $"Special orders: {string.Join(" | ", parts)} (details: active_special_orders())";
     }
 
     // ------------------------------------------------------------------ describing one order

@@ -38,6 +38,10 @@ public partial class Pathfinder
     public List<Vector2>? FindPathToAny(GameLocation location, Vector2 start, IEnumerable<Point> goals) =>
         FindPathToAny(new LocationGrid(location), start, goals);
 
+    /// <summary>Route to the reachable tile closest to a goal that cannot be reached or stood on.</summary>
+    public List<Vector2>? FindPathToNearest(GameLocation location, Vector2 start, Vector2 goal, bool ignoreVillagers = false) =>
+        FindPathToNearest(new LocationGrid(location, ignoreVillagers), start, goal);
+
     /// <summary>
     /// Whether the farmer could stand on this tile right now: inside the map and not colliding
     /// with anything the game would stop the player on (walls, water, objects, crops with

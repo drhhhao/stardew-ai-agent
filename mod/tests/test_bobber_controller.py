@@ -73,10 +73,8 @@ def should_press(bar: float, speed: float, h: float, aim_fish: float, in_bar: bo
     return error > 0.0
 
 
-def chase_treasure(has_treasure: bool, appear_timer: float, caught: bool, progress: float, was_chasing: bool) -> bool:
-    if not has_treasure or caught or appear_timer > 0.0:
-        return False
-    return progress > (TREASURE_STOP_PROGRESS if was_chasing else TREASURE_START_PROGRESS)
+def treasure_worth_chasing(progress: float, fish: float, treasure: float, bar_height: float) -> bool:
+    return progress >= TREASURE_START_PROGRESS and abs(treasure - fish) <= max(64.0, bar_height * 0.75)
 
 
 # ---- mirror of CastMath ---------------------------------------------------------------------
@@ -269,14 +267,12 @@ class BarMathTests(unittest.TestCase):
         self.assertTrue(should_press(goal + 0.5, 0.0, h, 300.0, True, False, True))
         self.assertFalse(should_press(goal + 0.5, 0.0, h, 300.0, True, False, False))
 
-    def test_treasure_hysteresis(self) -> None:
-        self.assertFalse(chase_treasure(False, 0.0, False, 0.9, False))
-        self.assertFalse(chase_treasure(True, 100.0, False, 0.9, False))  # not appeared yet
-        self.assertFalse(chase_treasure(True, 0.0, True, 0.9, True))  # already caught
-        self.assertFalse(chase_treasure(True, 0.0, False, 0.5, False))  # not full enough to start
-        self.assertTrue(chase_treasure(True, 0.0, False, 0.6, False))
-        self.assertTrue(chase_treasure(True, 0.0, False, 0.5, True))  # keeps going while above the stop level
-        self.assertFalse(chase_treasure(True, 0.0, False, 0.3, True))
+    def test_treasure_choice_is_made_once_from_distance_and_progress(self) -> None:
+        self.assertFalse(treasure_worth_chasing(0.5, 100.0, 110.0, 120.0))  # not enough progress yet
+        self.assertTrue(treasure_worth_chasing(0.6, 100.0, 110.0, 120.0))   # close enough to cover both
+        self.assertFalse(treasure_worth_chasing(0.6, 100.0, 400.0, 120.0))  # far chest: do not ping-pong
+        self.assertFalse(treasure_worth_chasing(0.9, 100.0, 300.0, 50.0))   # far in bar-height terms too
+        self.assertTrue(treasure_worth_chasing(0.9, 100.0, 150.0, 120.0))
 
 
 class CastMathTests(unittest.TestCase):

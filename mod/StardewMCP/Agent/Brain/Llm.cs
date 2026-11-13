@@ -32,8 +32,15 @@ public sealed class ChatMessage
     public List<LlmToolCall> ToolCalls { get; init; } = new();
     public List<LlmToolResult> ToolResults { get; init; } = new();
 
+    /// <summary>
+    /// An Anthropic assistant turn's content array exactly as the API returned it (JSON). It is sent back verbatim, because
+    /// thinking blocks must return unchanged; other providers ignore it.
+    /// </summary>
+    public string? AnthropicContent { get; init; }
+
     public static ChatMessage User(string text) => new() { Role = "user", Text = text };
-    public static ChatMessage Assistant(string? text, IEnumerable<LlmToolCall> calls) => new() { Role = "assistant", Text = text, ToolCalls = new List<LlmToolCall>(calls) };
+    public static ChatMessage Assistant(string? text, IEnumerable<LlmToolCall> calls, string? anthropicContent = null) =>
+        new() { Role = "assistant", Text = text, ToolCalls = new List<LlmToolCall>(calls), AnthropicContent = anthropicContent };
     public static ChatMessage Tool(IEnumerable<LlmToolResult> results) => new() { Role = "tool", ToolResults = new List<LlmToolResult>(results) };
 
     /// <summary>Rough size for context budgeting (characters of text, arguments and results).</summary>
@@ -56,6 +63,10 @@ public sealed class LlmResponse
     public List<LlmToolCall> ToolCalls { get; } = new();
     public int InputTokens { get; set; }
     public int OutputTokens { get; set; }
+    /// <summary>Input tokens read from the prompt cache (Anthropic), not counted in <see cref="InputTokens"/>.</summary>
+    public int CachedInputTokens { get; set; }
+    /// <summary>The assistant content as the provider returned it, to replay unchanged (see <see cref="ChatMessage.AnthropicContent"/>).</summary>
+    public string? AnthropicContent { get; set; }
     public string StopReason { get; set; } = "";
 }
 
@@ -117,7 +128,7 @@ public interface ILlmProvider
 }
 
 /// <summary>What a provider needs from the seat's configuration, without depending on ModConfig (tests build it directly).</summary>
-public sealed record LlmSettings(string Provider, string Model, string ApiKey, string BaseUrl, int MaxOutputTokens = 4096);
+public sealed record LlmSettings(string Provider, string Model, string ApiKey, string BaseUrl, int MaxOutputTokens = 4096, string Effort = "", bool BearerAuth = false);
 
 public static class LlmProviders
 {
@@ -139,7 +150,7 @@ public static class LlmProviders
         string model = string.IsNullOrWhiteSpace(s.Model) ? DefaultModel(provider) : s.Model.Trim();
         return provider switch
         {
-            "anthropic" => new AnthropicProvider(http, model, s.ApiKey, s.BaseUrl, s.MaxOutputTokens),
+            "anthropic" => new AnthropicProvider(http, model, s.ApiKey, s.BaseUrl, s.MaxOutputTokens, s.Effort, s.BearerAuth),
             "openai" => new OpenAiProvider(http, model, s.ApiKey, s.BaseUrl, s.MaxOutputTokens),
             "gemini" => new GeminiProvider(http, model, s.ApiKey, s.BaseUrl, s.MaxOutputTokens),
             _ => null

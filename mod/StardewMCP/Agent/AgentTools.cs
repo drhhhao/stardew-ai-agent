@@ -66,8 +66,18 @@ public static partial class AgentTools
 
     public static List<ToolDef> All()
     {
-        return new List<ToolDef>(SocialTools.All().Concat(JournalTools.All()).Concat(EconomyTools.All()).Concat(KnowledgeTools.All()).Concat(VillagerTools()).Concat(RomanceTools()).Concat(NamingTools()).Concat(Core()).Concat(CraftingToolDefs()).Concat(QolToolDefs()).Concat(CalendarToolDefs()).Concat(CommunityTools()).Concat(JojaTools()).Concat(BuildingToolDefs()).Concat(AnimalToolDefs()).Concat(ClothingToolDefs()).Concat(HorseToolDefs()));
+        var tools = new List<ToolDef>(SocialTools.All().Concat(JournalTools.All()).Concat(EconomyTools.All()).Concat(KnowledgeTools.All()).Concat(FishInfoTools.All()).Concat(MonsterTools.All()).Concat(MachineTools.All()).Concat(GuideTools.All(Config)).Concat(ProgressTools.All()).Concat(VillagerTools()).Concat(RomanceTools()).Concat(NamingTools()).Concat(Core()).Concat(CraftingToolDefs()).Concat(QolToolDefs()).Concat(CalendarToolDefs()).Concat(CommunityTools()).Concat(JojaTools()).Concat(BuildingToolDefs()).Concat(AnimalToolDefs()).Concat(ClothingToolDefs()).Concat(HorseToolDefs()).Concat(SleepTravelToolDefs()).Concat(SemanticToolDefs()));
+        // The phase-1 mode-switch tools superseded by semantic tools keep their old names and behavior for MCP/HTTP
+        // clients, but the built-in AI gets only the replacements (Preferred) and clients see the mark in /api/contract.
+        foreach (var t in tools)
+            if (System.Array.IndexOf(ToolCatalog.SupersededBySemantic, t.Name) >= 0)
+                t.Legacy = true;
+        return tools;
     }
+
+    /// <summary>The built-in AI's catalog (docs/tool-decoupling/README.md): everything <see cref="All"/> serves except
+    /// Legacy tools. MCP and HTTP clients keep getting the full list, including the legacy compatibility entries.</summary>
+    public static List<ToolDef> Preferred() => ToolCatalog.Preferred(All());
 
     private static List<ToolDef> Core()
     {
@@ -78,7 +88,7 @@ public static partial class AgentTools
                 Name = "think",
                 Description = $"Say what you are thinking/planning, IN {Lang.ToUpperInvariant()}, 1-3 sentences. It is your private thought: nobody else in the game sees it. Talk to yourself like a person, with no tile coordinates, decimals or tool names. Call this before each new plan and whenever something surprising happens. Game time is frozen while you think.",
                 Schema = Obj(new { text = Str($"Your thought in {Lang}") }, "text"),
-                Instant = true, NeedsWorld = false, AppendStatus = false,
+                Instant = true, Mutates = true, NeedsWorld = false, AppendStatus = false,
                 Run = Think
             },
             new()
@@ -114,8 +124,8 @@ public static partial class AgentTools
             new()
             {
                 Name = "walk_to",
-                Description = "Walk to a tile on the current map (pathfinding is automatic). If the tile is blocked or someone stands on it you stop next to it. Time passes while walking. " +
-                              "The result also lists forage, spots to dig and other finds you passed on the way.",
+                Description = "Walk to a CLEAR tile on the current map (pathfinding is automatic). If the exact target cannot be reached, you move to the nearest open tile and the result names the obstacle and the right clearing tool or an adjacent tile to choose next. " +
+                              "Time passes while walking. The result also lists forage, spots to dig and other finds you passed on the way.",
                 Schema = Obj(new { x = Int("Tile x"), y = Int("Tile y"), reason = Str(ReasonDesc) }, "x", "y", "reason"),
                 Run = WalkToTool
             },
@@ -139,8 +149,9 @@ public static partial class AgentTools
             new()
             {
                 Name = "plant",
-                Description = "Plant seeds (or apply fertilizer) on tilled soil tiles (=). You walk to each tile automatically. " +
+                Description = "Legacy: prefer plant_item. Plant seeds (or apply fertilizer) on tilled soil tiles (=). You walk to each tile automatically. " +
                               "Give tiles, or area [x,y,w,h] to fill the empty tilled soil inside it, or neither to fill every empty tilled tile on the map until the seeds run out.",
+                Legacy = true,
                 Schema = Obj(new
                 {
                     item = Str("Seed/fertilizer name, e.g. \"Parsnip Seeds\""),
@@ -193,7 +204,9 @@ public static partial class AgentTools
             new()
             {
                 Name = "travel_to",
-                Description = "Walk to another map through doors and exits: Farm, FarmHouse, BusStop, Town, SeedShop (Pierre's), Forest (Marnie), Beach, Mountain, Mine, Saloon, Blacksmith, etc. " +
+                Legacy = true,
+                Description = "Legacy: prefer travel_to_location (a place name only) and travel_to_shop (a shop or its owner). " +
+                              "Walk to another map through doors and exits: Farm, FarmHouse, BusStop, Town, SeedShop (Pierre's), Forest (Marnie), Beach, Mountain, Mine, Saloon, Blacksmith, etc. " +
                               "You can also name a shop keeper (Pierre, Clint, Robin, Marnie, Willy, Gus: their shop) or any villager (the map they are in now). " +
                               "Late game: Desert and Calico Desert (500g bus from the Bus Stop, after the Vault bundle or Joja Bus), Skull Cavern (the Skull Key opens the desert door), " +
                               "Ginger Island (1,000g boat from Willy's back room, after the boat is repaired), Casino, MovieTheater and Oasis. " +
@@ -220,14 +233,14 @@ public static partial class AgentTools
             new()
             {
                 Name = "ship",
-                Description = "Put items into the farm shipping bin (walks to the bin). Shipped items are sold overnight.",
+                Description = "Put items into the farm shipping bin (walks to the bin). This is the default way to sell produce and fish: same base price as a shop, no trip; paid overnight, so plan the next purchase for tomorrow.",
                 Schema = Obj(new { item = Str("Item name"), quantity = Int("How many (default: all)"), reason = Str(ReasonDesc) }, "item", "reason"),
                 Run = Ship
             },
             new()
             {
                 Name = "eat",
-                Description = "Eat an edible item from your inventory to restore energy.",
+                Description = "Eat an edible item from your inventory to restore energy and health.",
                 Schema = Obj(new { item = Str("Item name"), reason = Str(ReasonDesc) }, "item", "reason"),
                 Run = Eat
             },
@@ -242,9 +255,10 @@ public static partial class AgentTools
             new()
             {
                 Name = "rest",
-                Description = "Lie down on your own bed to get energy and health back while game time passes (in bed the game gives about " +
+                Description = "Multiplayer only: lying in bed gives energy and health back only while other farmers are in the game (alone the bed's question would stop the clock). " +
+                              "Lie down on your own bed to regenerate while game time passes (in bed the game gives about " +
                               "+14 energy per 10 minutes). Walks home first. A rest, not the night's sleep: it ends when your energy is full, " +
-                              "after the minutes you give, or when someone calls you, gives you something or comes into view. go_to_bed ends the day.",
+                              "after the minutes you give, or when someone calls you, gives you something or comes into view. sleep ends the day.",
                 Schema = Obj(new { minutes = Int("At most this many game minutes, 10-240 (default: until your energy is full)"), reason = Str(ReasonDesc) }, "reason"),
                 Run = Rest
             },
@@ -258,7 +272,9 @@ public static partial class AgentTools
             new()
             {
                 Name = "go_to_bed",
-                Description = "End the day: walk home to your bed and sleep. Write today's journal first (the journal tool: diary, lessons and plan); go_to_bed refuses until it is written. Crops grow and shipped items are sold overnight.",
+                Legacy = true,
+                Description = "Legacy: prefer sleep (no journal requirement, explicit confirm_early for an early night). " +
+                              "End the day: walk home to your bed and sleep. Write today's journal first (the journal tool: diary, lessons and plan); go_to_bed refuses until it is written. Crops grow and shipped items are sold overnight.",
                 Schema = Obj(new { reason = Str(ReasonDesc) }, "reason"),
                 Run = GoToBed
             }
@@ -312,7 +328,7 @@ public static partial class AgentTools
         // Farmer.Update regenerates a farmer in bed only in multiplayer (and alone, the bed's question would stop the clock)
         if (!Game1.IsMultiplayer)
         {
-            c.Fail(Reasons.NotReady, "Lying in bed only gives energy back while other farmers are in the game. Eat something, or go_to_bed to end the day.");
+            c.Fail(Reasons.NotReady, "Lying in bed only gives energy back while other farmers are in the game. Eat something, or sleep to end the day.");
             yield break;
         }
         int minutes = Math.Clamp(I(a, "minutes", 240), 10, 240);
@@ -381,9 +397,15 @@ public static partial class AgentTools
         // The only way may be where a villager stands (Sam in his front door after a talk): walk anyway, the stuck check below
         // waits for them to step aside and names them if they don't.
         path ??= new Pathfinder().FindPathThroughVillagers(loc, start.ToVector2(), target.ToVector2());
+        bool approximate = false;
         if (path == null)
         {
-            c.Fail(Reasons.NoPath, $"No walkable path to ({target.X},{target.Y}) on {loc.Name}.");
+            path = new Pathfinder().FindPathToNearest(loc, start.ToVector2(), target.ToVector2());
+            approximate = path != null;
+        }
+        if (path == null)
+        {
+            c.Fail(Reasons.NoPath, $"No walkable path to ({target.X},{target.Y}) on {loc.Name}. {ObstacleAdvice(loc, target)}");
             yield break;
         }
         StartWalk(loc, path);
@@ -443,10 +465,31 @@ public static partial class AgentTools
         P.Halt();
         if (P.TilePoint != target && Game1.currentLocation == loc)
         {
+            if (approximate)
+            {
+                c.Partial = true;
+                c.Changed = P.TilePoint != start;
+                c.Fail(Reasons.NoPath, $"Could not reach ({target.X},{target.Y}); moved to the nearest open tile ({P.TilePoint.X},{P.TilePoint.Y}) instead. {ObstacleAdvice(loc, target)}");
+                yield break;
+            }
             var blocker = BlockingVillager(loc, P.TilePoint);
             c.Fail(Reasons.NoPath, $"Could not reach ({target.X},{target.Y}); stopped at ({P.TilePoint.X},{P.TilePoint.Y})." +
                                    (blocker != null ? $" {blocker.displayName} is standing in the way at ({blocker.TilePoint.X},{blocker.TilePoint.Y}): wait a little, then try again." : ""));
         }
+    }
+
+    /// <summary>What to do when the requested tile is an object or otherwise cannot be stood on.</summary>
+    private static string ObstacleAdvice(GameLocation loc, Point target)
+    {
+        var label = WorldText.Describe(loc, target.X, target.Y).label;
+        if (string.IsNullOrWhiteSpace(label)) return "Use look to choose a clear, reachable tile instead of repeating the same target.";
+        string lower = label.ToLowerInvariant();
+        string tool = lower.Contains("stone") || lower.Contains("node") || lower.Contains("boulder") ? "Pickaxe"
+            : lower.Contains("tree") || lower.Contains("stump") || lower.Contains("twig") ? "Axe"
+            : lower.Contains("weed") || lower.Contains("grass") ? "Scythe" : "";
+        return $"The target contains {label}. " + (tool.Length > 0
+            ? $"Clear it with use_tool(tool=\"{tool}\") or choose another clear tile with look."
+            : "Choose a clear adjacent tile with look instead of walking onto it.");
     }
 
     /// <summary>A villager on a tile next to <paramref name="here"/>: who a walk that stopped there is most likely blocked by.</summary>
@@ -517,12 +560,24 @@ public static partial class AgentTools
                 var n = new Point(target.X + d.X, target.Y + d.Y);
                 if (!Pathfinder.IsWalkable(loc, n.X, n.Y) || FarmerOn(loc, n)) continue;
                 if (n == me) { best = n; bestLen = 0; break; }
-                var path = new Pathfinder().FindPath(loc, me.ToVector2(), n.ToVector2());
+                var path = new Pathfinder().FindPath(loc, me.ToVector2(), n.ToVector2())
+                           ?? new Pathfinder().FindPathThroughVillagers(loc, me.ToVector2(), n.ToVector2());
                 if (path != null && path.Count < bestLen) { best = n; bestLen = path.Count; }
             }
             if (best == null)
             {
-                c.Fail(Reasons.NoPath, $"No reachable tile next to ({target.X},{target.Y}).");
+                var nearest = new Pathfinder().FindPathToNearest(loc, me.ToVector2(), target.ToVector2());
+                if (nearest == null)
+                {
+                    c.Fail(Reasons.NoPath, $"No reachable tile next to ({target.X},{target.Y}). {ObstacleAdvice(loc, target)}");
+                    yield break;
+                }
+                var fallback = nearest[^1].ToPoint();
+                yield return WalkTo(fallback, c);
+                if (!c.Ok) yield break;
+                c.Partial = true;
+                c.Changed = P.TilePoint != me;
+                c.Fail(Reasons.NoPath, $"No reachable tile next to ({target.X},{target.Y}); moved to the nearest open tile ({fallback.X},{fallback.Y}) instead. {ObstacleAdvice(loc, target)}");
                 yield break;
             }
             yield return WalkTo(best.Value, c);
@@ -809,7 +864,8 @@ public static partial class AgentTools
             var now = WorldText.Describe(loc, t.X, t.Y);
             Rt.Stats.HarvestTile(symBefore, now.sym);
             lines.Add($"({t.X},{t.Y}) {label ?? "empty"} → now: {now.label ?? "empty"}");
-            if (label != now.label) batch.Done++; else batch.Skip(); // the tile looks the same: nothing was picked up
+            // the tile looks the same (a machine's time left ticking down doesn't count): nothing was picked up
+            if (WorldText.StableLabel(label) != WorldText.StableLabel(now.label)) batch.Done++; else batch.Skip();
         }
         yield return Ticks(30);
         var diff = Diff(before);
@@ -849,8 +905,8 @@ public static partial class AgentTools
     private static IEnumerator Interact(JsonElement a, CallContext c)
     {
         var holding = S(a, "holding").Trim();
-        int slot = holding.Length > 0 ? FindItem(holding) : -1;
-        if (holding.Length > 0 && slot < 0) { c.Fail(Reasons.NoItem, $"No \"{holding}\" in inventory."); yield break; }
+        int slot = SlotToHold(holding, c);
+        if (!c.Ok) yield break;
         bool atTile = Has(a, "x") && Has(a, "y");
         if (!atTile && slot < 0) { c.Fail(Reasons.InvalidArgs, "Give the tile (x, y), or holding to use an item where you stand."); yield break; }
 
@@ -865,43 +921,78 @@ public static partial class AgentTools
         else
             yield return WaitIdle();
 
-        // Without holding, put away a held object so nothing gets loaded or gifted by accident.
-        if (slot >= 0) P.CurrentToolIndex = slot;
-        else if (P.ActiveObject != null) P.CurrentToolIndex = FirstToolSlot();
+        HoldForActionPress(slot);
         var held = P.CurrentItem?.DisplayName;
         var was = atTile ? WorldText.Describe(Loc, t.X, t.Y).label : null;
 
         string what;
         if (atTile)
             what = PressAction(t) ? $"Interacted with ({t.X},{t.Y})" : $"Nothing happened at ({t.X},{t.Y})";
-        else if (P.ActiveObject is { } obj and not StardewValley.Objects.Furniture && obj.performUseAction(Loc))
-        {
-            // Secret notes and journal scraps open a letter but stay in the pack (#55); other usable items are consumed.
-            if (obj.QualifiedItemId is not ("(O)79" or "(O)842")) P.reduceActiveItemByOne();
-            what = $"Used {held}";
-        }
         else
         {
-            c.Fail(Reasons.NotHere, $"{held} can't be used where you stand.");
-            yield break;
+            what = UseHeldItemInPlace(c);
+            if (!c.Ok) yield break;
         }
         yield return Ticks(30);
         yield return WaitIdle(atTile ? 180 : 600);
         if (!atTile)
-        {
-            // After its animation a totem hides the farmer and warps after a delayed fade.
-            for (int i = 0; i < 600 && (!Game1.displayFarmer || Game1.globalFade || P.freezePause > 0); i++) yield return null;
-            yield return WaitIdle();
-        }
+            yield return WaitAfterInPlaceUse();
 
         if (slot >= 0 && atTile) what += $" holding {held}";
         var now = atTile && Loc == startLoc ? WorldText.Describe(Loc, t.X, t.Y).label : was;
-        var changed = now != was ? $" Now: {now ?? "empty"}." : "";
+        var changed = WorldText.StableLabel(now) != WorldText.StableLabel(was) ? $" Now: {now ?? "empty"}." : "";
         var moved = Loc != startLoc ? $" You are now in {Loc.Name}." : "";
         c.Result = $"{what}.{changed}{moved} {Diff(before)}".Trim();
+        // A sign is a dialogue box, not a changed tile: without its text the AI only sees "Interacted with (x,y)".
+        var menu = WorldText.MenuState().Trim();
+        if (menu.Length > 0) c.Result = c.Result.TrimEnd() + "\n" + menu;
     }
 
     // talk_to lives in NpcTools.cs (TalkToNpc).
+
+    /// <summary>The pack slot of the item named <paramref name="holding"/> for an action press, or -1 when nothing was
+    /// asked for; fails <paramref name="c"/> when the named item is not in the pack. Shared by interact and the
+    /// semantic interaction tools (Agent/Semantic/InteractTools.cs), which call this logic directly instead of
+    /// fabricating an interact JSON.</summary>
+    private static int SlotToHold(string holding, CallContext c)
+    {
+        holding = holding.Trim();
+        if (holding.Length == 0) return -1;
+        int slot = FindItem(holding);
+        if (slot < 0) c.Fail(Reasons.NoItem, $"No \"{holding}\" in inventory.");
+        return slot;
+    }
+
+    /// <summary>Hold the pack item in <paramref name="slot"/> for an action press; with no item, put away a held object
+    /// so nothing gets loaded or gifted by accident. Shared by interact and the semantic interaction tools.</summary>
+    private static void HoldForActionPress(int slot)
+    {
+        if (slot >= 0) P.CurrentToolIndex = slot;
+        else if (P.ActiveObject != null) P.CurrentToolIndex = FirstToolSlot();
+    }
+
+    /// <summary>Use the currently held object where the farmer stands (totems, books...). Returns the "Used X" text, or
+    /// fails <paramref name="c"/> when the item has no use action. Shared by interact and use_held_item.</summary>
+    private static string UseHeldItemInPlace(CallContext c)
+    {
+        var held = P.CurrentItem?.DisplayName;
+        if (P.ActiveObject is { } obj and not StardewValley.Objects.Furniture && obj.performUseAction(Loc))
+        {
+            // Secret notes and journal scraps open a letter but stay in the pack (#55); other usable items are consumed.
+            if (obj.QualifiedItemId is not ("(O)79" or "(O)842")) P.reduceActiveItemByOne();
+            return $"Used {held}";
+        }
+        c.Fail(Reasons.NotHere, $"{held} can't be used where you stand.");
+        return "";
+    }
+
+    /// <summary>Wait out a held item's use animation and warp: after its animation a totem hides the farmer and warps
+    /// after a delayed fade. Shared by interact and use_held_item.</summary>
+    private static IEnumerator WaitAfterInPlaceUse()
+    {
+        for (int i = 0; i < 600 && (!Game1.displayFarmer || Game1.globalFade || P.freezePause > 0); i++) yield return null;
+        yield return WaitIdle();
+    }
 
     private static int FirstToolSlot()
     {
@@ -943,7 +1034,7 @@ public static partial class AgentTools
 
     private static IEnumerator CloseMenu(JsonElement a, CallContext c)
     {
-        if (Game1.activeClickableMenu == null) { c.Result = "No menu open."; yield break; }
+        if (Game1.activeClickableMenu == null) { c.NoChange("No menu open."); yield break; }
         // The box that waits for a proposal's answer comes back unless the proposal itself is cancelled, and the other
         // farmer's game has to confirm that. Ported from Pichaya31847/stardew-ai-agent (MIT, commit 464e777; their day 68:
         // 77 close_menu calls answered "closed" while the box stayed).
@@ -984,6 +1075,15 @@ public static partial class AgentTools
             c.Fail(Reasons.NotFound, $"Unknown location \"{asked}\". Use a map name (Farm, Town, SeedShop...), a shop keeper's name (Pierre, Clint, Robin, Marnie, Willy, Gus) or any villager's name.");
             yield break;
         }
+        yield return TravelToResolved(target, note, c);
+    }
+
+    /// <summary>The shared tail of every travel tool (legacy travel_to, travel_to_location, travel_to_shop): shop hours,
+    /// the area gates (casino card, movie theater), the door-by-door walk and the arrival note.</summary>
+    private static IEnumerator TravelToResolved(GameLocation target, string note, CallContext c)
+    {
+        var closed = ShopTravelProblem(target.Name);
+        if (closed != null) { c.Fail(Reasons.ShopClosed, closed); yield break; }
         if (target.Name == "Club" && !P.hasClubCard)
         {
             c.Fail(Reasons.ShopClosed, "The casino is behind the Oasis back door and the bouncer only lets in holders of the Club Card.");
@@ -1341,10 +1441,11 @@ public static partial class AgentTools
         int slot = FindItem(name, it => it is SObject o && o.Edibility > -300);
         if (slot < 0) { c.Fail(Reasons.NoItem, $"No edible \"{name}\" in inventory."); yield break; }
         yield return WaitIdle();
-        var before = (int)P.Stamina;
+        int staminaBefore = (int)P.Stamina;
+        int healthBefore = P.health;
         var itemName = P.Items[slot].DisplayName;
         yield return EatSlot(slot);
-        c.Result = $"Ate {itemName}: energy {before} → {(int)P.Stamina}.";
+        c.Result = $"Ate {itemName}: energy {staminaBefore} → {(int)P.Stamina}, health {healthBefore} → {P.health}/{P.maxHealth}.";
     }
 
     /// <summary>Eat the item in a slot with the game's own <c>Farmer.eatHeldObject</c> and wait for the animation to end (shared by eat and fight's eat_below).</summary>
@@ -1390,12 +1491,25 @@ public static partial class AgentTools
     }
 
     /// <summary>Walk home to the bed and ask to sleep (the sleep ready check opens). <paramref name="first"/>: tonight's first time,
-    /// which also takes the morning briefing's snapshot and starts the sleep stats.</summary>
-    private static IEnumerator LieDown(CallContext c, bool first)
+    /// which also takes the morning briefing's snapshot and starts the sleep stats. <paramref name="claimMenuClose"/>: the legacy
+    /// go_to_bed closes an open menu with close_menu (which accepts a letter's quest and claims a grab menu's items before closing);
+    /// the semantic sleep refuses to take those decisions and asks for them explicitly instead.</summary>
+    private static IEnumerator LieDown(CallContext c, bool first, bool claimMenuClose = true)
     {
         // A menu left open (a shop after a failed buy) would block the walk home and hold the others' sleep check.
         if (Game1.activeClickableMenu != null)
-            yield return CloseMenu(default, new CallContext());
+        {
+            if (claimMenuClose)
+            {
+                yield return CloseMenu(default, new CallContext());
+            }
+            else
+            {
+                var dismiss = new CallContext();
+                yield return DismissMenuSemantic(default, dismiss);
+                if (!dismiss.Ok) { c.Fail(dismiss.Reason ?? Reasons.MenuOpen, $"sleep won't decide a menu for you: {dismiss.Result}"); yield break; }
+            }
+        }
 
         if (Loc is not FarmHouse)
         {
@@ -1440,12 +1554,21 @@ public static partial class AgentTools
             yield break;
         }
 
+        yield return SleepThroughNight(c, claimMenuClose: true);
+    }
+
+    /// <summary>The shared second half of ending the day (legacy go_to_bed and the semantic sleep): default pending
+    /// choices, walk home, lie down and wait out the night, clicking the end-of-day screens. The caller owns the
+    /// pre-checks (journal, early-bed warning); <paramref name="claimMenuClose"/> picks how an open menu is closed
+    /// on the way to bed (see <see cref="LieDown"/>).</summary>
+    internal static IEnumerator SleepThroughNight(CallContext c, bool claimMenuClose)
+    {
         int dayBefore = Game1.Date.TotalDays;
         int moneyBefore = P.Money;
         Professions.ResolveDefaults(Rt, P, "not chosen before bed");
         Naming.ResolveDefaults(Rt, "not named before bed");
         var lie = new CallContext();
-        yield return LieDown(lie, first: true);
+        yield return LieDown(lie, first: true, claimMenuClose);
         if (!lie.Ok) { c.Fail(lie.Reason ?? Reasons.NoPath, lie.Result ?? "Couldn't get to bed."); yield break; }
 
         // Wait for the new day; click through end-of-day screens.
@@ -1486,7 +1609,7 @@ public static partial class AgentTools
                 {
                     outOfBed = 0;
                     Rt.Log.Add("system", text: $"Out of bed at {Loc.Name}: going back to bed");
-                    yield return LieDown(new CallContext(), first: false);
+                    yield return LieDown(new CallContext(), first: false, claimMenuClose);
                 }
                 yield return null;
             }
@@ -1509,6 +1632,59 @@ public static partial class AgentTools
         Rt.Log.Add("system", text: $"New day: farm day {AgentLog.FarmDay}");
         c.Result = $"Good morning! It's now farm day {AgentLog.FarmDay}. Money {moneyBefore}g → {P.Money}g (shipping income {P.Money - moneyBefore}g). Your day is over — stop here.";
     }
+
+    // ------------------------------------------------------------------ phase 4B: sleep and travel with a single intent
+
+    /// <summary>
+    /// The phase-4B semantic tools (docs/tool-decoupling/README.md): sleep ends the day without the legacy journal
+    /// requirement and never decides an open menu on the way to bed; travel_to_location takes a place name only and
+    /// travel_to_shop a shop or its keeper. The Run bodies live in Agent/Semantic/SleepTools.cs and TravelTools.cs and
+    /// reuse the legacy travel/sleep cores (TravelToResolved, SleepThroughNight), so behavior cannot drift; the ToolDef
+    /// registrations live here, next to the legacy tools they replace, because the Agent/Semantic/ folder holds
+    /// implementations only.
+    /// </summary>
+    private static List<ToolDef> SleepTravelToolDefs() => new()
+    {
+        new()
+        {
+            Name = "sleep",
+            Description = "End the day: walk home to your bed and sleep. Unlike legacy go_to_bed no journal is required first. " +
+                          "Crops grow and shipped items are sold overnight. The one guard left: before 17:00, with more than a quarter " +
+                          "of your energy still left, the call is refused with a warning unless confirm_early=true says you really mean " +
+                          "to sleep now. A menu that still hides a decision (a letter's quest or attachments, items to claim) is never " +
+                          "decided for you: the call refuses and names the tool that decides (accept_letter_quest, claim_menu_items, dismiss_menu).",
+            Schema = Obj(new
+            {
+                confirm_early = new { type = "boolean", description = "Pass true to sleep before 17:00 while you still have plenty of energy: you really mean to sleep now" },
+                reason = Str(ReasonDesc)
+            }, "reason"),
+            Run = SleepSemantic
+        },
+        new()
+        {
+            Name = "travel_to_location",
+            Description = "Walk to another map through doors and exits — a place name only: Farm, FarmHouse, BusStop, Town, Forest, Beach, Mountain, " +
+                          "Mine, the mines, Saloon, Blacksmith and more. Late game: Desert / Calico Desert (500g bus from the Bus Stop), Skull Cavern " +
+                          "(the Skull Key opens the desert door), Ginger Island (1,000g boat from Willy's back room), Casino, MovieTheater and Oasis. " +
+                          "Known shop trips are refused before opening, after closing, on closed days/festivals and within 30 minutes of closing. " +
+                          "The result also lists forage, spots to dig " +
+                          "and other finds you passed on the way. A shop or its owner goes with travel_to_shop; a villager is reached with " +
+                          "talk_to_villager or give_gift, not by travel.",
+            Schema = Obj(new { location = Str("Destination map or area name, e.g. Town, Beach, Ginger Island"), reason = Str(ReasonDesc) }, "location", "reason"),
+            Run = TravelToLocationSemantic
+        },
+        new()
+        {
+            Name = "travel_to_shop",
+            Description = "Walk to a shop and stop at its counter, named by the shop or its owner: Pierre (SeedShop), Clint (Blacksmith), Robin " +
+                          "(the carpenter), Marnie (AnimalShop), Willy (FishShop), Gus (Saloon), Sandy (Oasis)... or the shop's map name directly. " +
+                          "Known shop trips are refused before opening, after closing, on closed days/festivals and within 30 minutes of closing; check calendar and do something else first. " +
+                          "The result also lists forage, spots to dig and other finds you passed on the way. " +
+                          "A villager's name is not a shop: to talk or give a gift use talk_to_villager / give_gift instead.",
+            Schema = Obj(new { shop = Str("Shop or shop keeper name, e.g. Pierre, SeedShop, Blacksmith, Marnie"), reason = Str(ReasonDesc) }, "shop", "reason"),
+            Run = TravelToShopSemantic
+        }
+    };
 
     /// <summary>The night of a farmer whose AI was already told its day is over: a naming box gets a random name and a question
     /// the game's last answer ("No" comes last), so the night never waits on an AI that has gone.</summary>

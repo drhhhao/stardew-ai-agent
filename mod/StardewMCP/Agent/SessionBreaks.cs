@@ -18,7 +18,7 @@ namespace StardewMCP.Agent;
 /// Only MCP clients that opt in are affected: connect to <c>/mcp?breaks=1</c> (or set
 /// <see cref="ModConfig.SessionBreaksForAll"/>). A session is one MCP <c>initialize</c> .. the next <c>initialize</c>.
 /// After the notice, actions are refused (the AI should call think with its plan and end its turn); observations,
-/// think, chat and go_to_bed still work. A client that ignores the notice five times is not held back any longer.
+/// think, chat and sleep still work. A client that ignores the notice five times is not held back any longer.
 /// </summary>
 public static class SessionBreaks
 {
@@ -31,7 +31,7 @@ public static class SessionBreaks
     private const string HowToContinue =
         "Do this now: call think with your plan for the rest of the day (what you are in the middle of, what comes next, what to remember), " +
         "then end your turn with a one-line reply and make no more tool calls. A new session starts by itself and receives your plan. " +
-        "If it is already bedtime, call go_to_bed instead.";
+        "If it is already bedtime, call sleep instead.";
 
     private sealed class Seat
     {
@@ -90,7 +90,7 @@ public static class SessionBreaks
 
     /// <summary>
     /// Before a call starts: once the notice has been given, refuse actions that let game time pass.
-    /// go_to_bed is always allowed. Returns true with the text to give the AI instead.
+    /// sleep (go_to_bed) is always allowed. Returns true with the text to give the AI instead.
     /// </summary>
     public static bool Refuse(PlayerLog log, PendingCall call, out string message)
     {
@@ -101,7 +101,7 @@ public static class SessionBreaks
         EnsureStarted(seat);
         lock (seat.Lock)
         {
-            if (!seat.Armed || !seat.Announced || call.Instant || call.Tool.Name == "go_to_bed")
+            if (!seat.Armed || !seat.Announced || call.Instant || ToolCatalog.IsSleep(call.Tool.Name))
                 return false;
             if (++seat.Refusals > MaxRefusals)
             {
@@ -130,7 +130,7 @@ public static class SessionBreaks
                 return text;
             seat.Calls++;
             seat.ResultChars += text.Length;
-            if (seat.Announced || call.Tool.Name == "go_to_bed" || !Context.IsWorldReady)
+            if (seat.Announced || ToolCatalog.IsSleep(call.Tool.Name) || !Context.IsWorldReady)
                 return text;
             var reason = Due(seat);
             if (reason == null)

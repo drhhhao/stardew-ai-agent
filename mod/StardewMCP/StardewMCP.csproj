@@ -20,4 +20,9 @@
     <None Include="assets\system_prompt.md" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <!-- Strategy guide read by the guide tool (GuideKnowledge). -->
+  <ItemGroup>
+    <None Include="assets\guide\*.md" Link="assets\guide\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

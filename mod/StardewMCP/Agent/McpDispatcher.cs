@@ -46,18 +46,49 @@ public class McpDispatcher
     private readonly IReadOnlyDictionary<string, ToolDef> _tools;
     private readonly Func<bool> _splitScreen;
     private readonly string _serverVersion;
+    private readonly Func<bool> _guideOn;
+    private readonly Func<bool> _selfDefenseOn;
+
+    /// <summary>Appended to the initialize instructions when the strategy guide is on.</summary>
+    public const string GuideInstructions =
+        " Call guide() for the strategy roadmap and guide(topic) before big decisions; crops, item_info, fish_info, machines, bundles and progress give exact game data.";
+
+    /// <summary>Appended when <see cref="ModConfig.SelfDefense"/> is on, so an external AI expects the swings it did not ask for.</summary>
+    public const string SelfDefenseInstructions =
+        " Your farmer also defends itself between actions: with no action running, a monster that comes within melee reach is hit with your best weapon, and you eat health food when hurt. It never chases and starts no action (only at 25% health with no food does it step a few tiles away); a tool result explains it under 'While no action was running (you were thinking)'.";
+
+    /// <summary>Appended always: the monsters tool is always registered.</summary>
+    public const string MonsterInstructions =
+        " Use monsters() on a new mine floor or before a crowded fight: it lists every living monster on the map with HP, damage, distance and a one-line tactic, and shows the held weapon's damage.";
+
+    /// <summary>Appended always: routine selling does not need a shop trip.</summary>
+    public const string SellInstructions =
+        " Sell routine produce and fish with ship at the farm (same base price, paid overnight); walk to a shop to sell only when you need the gold today or the buyer pays more. If the shop is closed, do not wait in town: ship and buy tomorrow.";
+
+    /// <summary>Appended always: the farmhouse TV is a free daily information source.</summary>
+    public const string TvInstructions =
+        " Watch the farmhouse TV in the morning with watch_tv: weather is tomorrow's forecast, fortune is today's luck, Livin' Off The Land (Mon/Thu) gives tips, Queen of Sauce (Sun new, Wed rerun) teaches recipes, and Fishing (after Pam's letter) lists this season's fish.";
+
+    /// <summary>Appended always: keeping the pack light is a tool call, not a walk to a shop.</summary>
+    public const string ChestInstructions =
+        " When the pack fills, use chest(action=stash) at home or on the farm: it finds or crafts a Chest (50 Wood) and stores everything except tools, seeds and cooked dishes; give item/items to store only those.";
 
     public McpDispatcher(IReadOnlyDictionary<string, ToolDef> tools, bool splitScreen) : this(tools, () => splitScreen) { }
 
     /// <summary>
     /// <paramref name="splitScreen"/> is read on each initialize, so a config change applies to the next session.
     /// <paramref name="serverVersion"/> is the mod's version (manifest.json), reported as serverInfo.version.
+    /// <paramref name="guideOn"/> (read on each initialize) adds the strategy guide sentence to the instructions.
+    /// <paramref name="selfDefenseOn"/> adds the self-defense sentence.
     /// </summary>
-    public McpDispatcher(IReadOnlyDictionary<string, ToolDef> tools, Func<bool> splitScreen, string serverVersion = "0.0.0")
+    public McpDispatcher(IReadOnlyDictionary<string, ToolDef> tools, Func<bool> splitScreen, string serverVersion = "0.0.0",
+        Func<bool>? guideOn = null, Func<bool>? selfDefenseOn = null)
     {
         _tools = tools;
         _splitScreen = splitScreen;
         _serverVersion = serverVersion;
+        _guideOn = guideOn ?? (() => false);
+        _selfDefenseOn = selfDefenseOn ?? (() => false);
     }
 
     /// <summary>
@@ -100,9 +131,15 @@ public class McpDispatcher
                     protocolVersion = ver ?? ProtocolFallback,
                     capabilities = new { tools = new { listChanged = false } },
                     serverInfo = new { name = "stardew", version = _serverVersion },
-                    instructions = _splitScreen()
+                    instructions = (_splitScreen()
                         ? "You live on a shared Stardew Valley farm with other newcomers. The whole world is frozen while you or another player is thinking, and only moves while actions run."
-                        : "You are playing Stardew Valley. Game time is frozen while you think and only moves while an action runs."
+                        : "You are playing Stardew Valley. Game time is frozen while you think and only moves while an action runs.")
+                        + MonsterInstructions
+                        + SellInstructions
+                        + TvInstructions
+                        + ChestInstructions
+                        + (_selfDefenseOn() ? SelfDefenseInstructions : "")
+                        + (_guideOn() ? GuideInstructions : "")
                 });
             case "ping":
                 return Ok(id, new { });
@@ -112,8 +149,14 @@ public class McpDispatcher
                     tools = _tools.Values.Select(t => new { name = t.Name, description = t.Description, inputSchema = t.Schema })
                 });
             case "tools/call":
-                var name = p.GetProperty("name").GetString() ?? "";
-                var args = p.TryGetProperty("arguments", out var a) ? a.Clone() : JsonDocument.Parse("{}").RootElement;
+                if (p.ValueKind != JsonValueKind.Object)
+                    return Ok(id, seat.ErrorReply(Reasons.InvalidArgs, "tools/call needs a params object with a string \"name\" and an optional \"arguments\" object."));
+                if (!p.TryGetProperty("name", out var nameEl) || nameEl.ValueKind != JsonValueKind.String)
+                    return Ok(id, seat.ErrorReply(Reasons.InvalidArgs, "tools/call needs a string \"name\" in params."));
+                var name = nameEl.GetString() ?? "";
+                if (p.TryGetProperty("arguments", out var a) && a.ValueKind != JsonValueKind.Object)
+                    return Ok(id, seat.ErrorReply(Reasons.InvalidArgs, $"tools/call arguments for {name} must be an object."));
+                var args = p.TryGetProperty("arguments", out a) ? a.Clone() : JsonDocument.Parse("{}").RootElement;
                 if (!_tools.TryGetValue(name, out var tool))
                     return Ok(id, seat.ErrorReply("not_found", $"Unknown tool {name}"));
                 if (!seat.Active)

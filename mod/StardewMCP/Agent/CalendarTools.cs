@@ -148,7 +148,8 @@ public static partial class AgentTools
         new()
         {
             Name = "sell",
-            Description = "Sell items from your inventory to the open shop menu and get the gold right away (ship only pays overnight). Open a shop that buys the item first: interact with its counter during opening hours. " +
+            Description = "Sell items from your inventory to the open shop menu and get the gold right away. This needs a trip to the shop: for routine produce and fish use ship at the farm instead (same base price, paid overnight). " +
+                          "Walk here only when you need the gold today for something you are buying now, or the buyer pays a special price. Open a shop that buys the item first: interact with its counter during opening hours. " +
                           "The shop decides what it buys. Lowest quality is sold first. Close the menu when you are done.",
             Schema = Obj(new { item = Str("Item name"), quantity = Int("How many (default 1)"), reason = Str(ReasonDesc) }, "item", "reason"),
             Run = Sell
@@ -255,6 +256,28 @@ public static partial class AgentTools
         return sb.ToString().TrimEnd();
     }
 
+    /// <summary>Why travelling to a known shop now would waste the trip, or null when its counter should be open.</summary>
+    internal static string? ShopTravelProblem(string map)
+    {
+        var shop = CalendarData.Shops.FirstOrDefault(s => s.Location.Equals(map, StringComparison.OrdinalIgnoreCase));
+        if (shop == null) return null;
+        int now = Game1.timeOfDay;
+        var today = CalendarData.DateAhead(0);
+        var festival = CalendarData.Today();
+        bool festivalNow = festival is { Start: > 0 } && now >= festival.Start && now < festival.End;
+        var status = ShopRules.Evaluate(now, shop.Open, shop.Close, shop.ClosedDays.Contains(today.Weekday), festivalNow);
+        string hours = $"{CalendarData.Clock(shop.Open)}-{CalendarData.Clock(shop.Close)}";
+        return status switch
+        {
+            ShopAvailability.ClosedDay => $"{shop.Name} is closed today ({hours}). Do another task first instead of travelling there.",
+            ShopAvailability.Festival => $"{shop.Name} is closed during {festival!.Name} today. Do another task first instead of travelling there.",
+            ShopAvailability.BeforeOpen => $"{shop.Name} opens at {CalendarData.Clock(shop.Open)} (it is {WorldText.FormatTime(now)}). Do another task first instead of travelling to a closed shop.",
+            ShopAvailability.ClosingSoon => $"{shop.Name} closes at {CalendarData.Clock(shop.Close)} (it is {WorldText.FormatTime(now)}). There is not enough time for a useful shop trip; do another task first.",
+            ShopAvailability.AfterClose => $"{shop.Name} is closed for today ({hours}). Do another task first instead of travelling there.",
+            _ => null
+        };
+    }
+
     // ------------------------------------------------------------------ festivals
 
     private static readonly NPC[] NoActors = Array.Empty<NPC>();
@@ -318,7 +341,7 @@ public static partial class AgentTools
     private static IEnumerator FestivalTool(JsonElement a, CallContext c)
     {
         var action = S(a, "action").Trim().ToLowerInvariant();
-        if (action != "start" && action != "leave" && action != "eggs") { c.Fail("action must be \"start\", \"leave\" or \"eggs\"."); yield break; }
+        if (action != "start" && action != "leave" && action != "eggs") { c.InvalidArgs("action must be \"start\", \"leave\" or \"eggs\".", "start", "leave", "eggs"); yield break; }
         if (!(Game1.eventUp && Game1.CurrentEvent is { isFestival: true })) { c.Fail(NoFestivalNow()); yield break; }
         if (action == "start") yield return FestivalStart(c);
         else if (action == "eggs") yield return FestivalEggs(Math.Max(1, I(a, "max", int.MaxValue)), c);

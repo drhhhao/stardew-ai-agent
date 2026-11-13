@@ -59,7 +59,7 @@ public static class JournalTools
                 people = AgentTools.Str($"Optional notes in {Lang} on the others on the farm: one line per person (current stance + latest evidence + day)."),
                 day = AgentTools.Int("Optional farm day to write this journal for, from 1 to today. Only for catching up a day you did not write (for example after passing out). Default: today")
             }, "diary", "lessons", "plan"),
-            Instant = true, AppendStatus = false, Run = Journal
+            Instant = true, Mutates = true, AppendStatus = false, Run = Journal
         }
     };
 

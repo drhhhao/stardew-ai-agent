@@ -90,8 +90,10 @@ public static class SocialTools
         return size.Y + 24; // the scroll's lower edge and tail hang below its text
     }
 
-    // All of these are marked Instant: talking costs no game time, so they run even while the world is
-    // frozen and never count as "acting" in WorldClock. They log their own entries.
+    // All of these are marked Instant: talking costs no game time, so the world stays frozen while one runs and they
+    // never count as "acting" in WorldClock. They still Mutate (chat, bubbles, inventories), so they are never
+    // readOnly; give also hands items over and must stay ordered with the seat's actions, so it is Serialized and
+    // takes the action lane. They log their own entries.
     public static List<ToolDef> All() => new()
     {
         new()
@@ -102,21 +104,21 @@ public static class SocialTools
                           "someone, go and find them first. Keep it short. Write @name to call a player who can hear you: it " +
                           "stops what they are doing (walking, waiting, farming) so they read it at once.",
             Schema = AgentTools.Obj(new { text = AgentTools.Str("What you say") }, "text"),
-            Instant = true, AppendStatus = false, Run = Say
+            Instant = true, Mutates = true, AppendStatus = false, Run = Say
         },
         new()
         {
             Name = "emote",
             Description = $"Show an emote bubble above your head. Names: {string.Join(", ", EmoteNames())}.",
             Schema = AgentTools.Obj(new { name = AgentTools.Str("Emote name") }, "name"),
-            Instant = true, AppendStatus = false, Run = Emote
+            Instant = true, Mutates = true, AppendStatus = false, Run = Emote
         },
         new()
         {
             Name = "give",
             Description = "Hand an item from your inventory to another player standing within 4 tiles of you (same map). Tools can't be given.",
             Schema = AgentTools.Obj(new { to = AgentTools.Str("Their name"), item = AgentTools.Str("Item name"), count = AgentTools.Int("How many (default 1)") }, "to", "item"),
-            Instant = true, AppendStatus = false, Run = Give
+            Instant = true, Mutates = true, Serialized = true, AppendStatus = false, Run = Give
         }
     };
 

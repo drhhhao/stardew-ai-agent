@@ -25,14 +25,19 @@ public static class Professions
     {
         int b = choice.X * 6;
         if (choice.Y == 5) return new[] { b, b + 1 };
-        if (p.professions.Contains(b)) return new[] { b + 2, b + 3 };
-        if (p.professions.Contains(b + 1)) return new[] { b + 4, b + 5 };
+        foreach (int first in new[] { b, b + 1 })
+            if (p.professions.Contains(first))
+            {
+                var (x, y) = ProgressMath.Level10Of(first);
+                return new[] { x, y };
+            }
         return null;
     }
 
     public static string Title(int id) => LevelUpMenu.getProfessionTitleFromNumber(id);
 
-    private static string Text(int id)
+    /// <summary>"Tiller: Crops are worth 10% more." (title and the game's description).</summary>
+    public static string Text(int id)
     {
         var d = LevelUpMenu.getProfessionDescription(id);
         return $"{d[0]}: {string.Join(" ", d.Skip(1).Select(s => s.Trim()).Where(s => s.Length > 0))}";
@@ -47,10 +52,17 @@ public static class Professions
             var opts = Options(p, c);
             var body = opts == null
                 ? $"choose the {SkillName(c.X)} 5 profession first"
-                : string.Join("  ", opts.Select((id, i) => $"{i}) {Text(id)}"));
+                : string.Join("  ", opts.Select((id, i) => $"{i}) {Text(id)}{(c.Y == 5 ? $" (at 10: {Subtree(id)})" : "")}"));
             return $"Pending profession choice (permanent): {SkillName(c.X)} {c.Y} — {body}";
         });
         return string.Join("\n", lines) + "\nUse choose_profession(option 0 or 1) before bed, or the default is picked for you.";
+    }
+
+    /// <summary>The two level-10 titles that follow a level-5 profession: "Coopmaster or Shepherd".</summary>
+    public static string Subtree(int level5Id)
+    {
+        var (a, b) = ProgressMath.Level10Of(level5Id);
+        return $"{Title(a)} or {Title(b)}";
     }
 
     /// <summary>The overnight chooser: save the choice for the AI and close the menu without picking.</summary>

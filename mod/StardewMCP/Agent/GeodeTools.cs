@@ -30,7 +30,8 @@ public static partial class AgentTools
             Name = "crack_geode",
             Description = $"Have Clint crack geodes open ({GeodeFee}g each). Go to the Blacksmith (travel_to, check his opening hours) first. " +
                           "item: Geode, Frozen Geode, Magma Geode, Omni Geode, Artifact Trove or Golden Coconut; leave it empty to list the geodes you carry. " +
-                          "quantity: how many (default 1). The result lists what came out. Artifacts, minerals and gems belong in the Museum (Gunther), one of each kind, before you sell them.",
+                          "quantity: how many (default 1). The result lists what came out. Artifacts, minerals and gems belong in the Museum (Gunther), one of each kind, before you sell them. " +
+                          "Kept for old clients; list_geodes lists the geodes you carry and crack_geodes opens them.",
             Schema = Obj(new
             {
                 item = Str("Geode name; empty lists the geodes you carry"),
@@ -38,22 +39,32 @@ public static partial class AgentTools
                 reason = Str(ReasonDesc)
             }),
             InstantFor = a => S(a, "item").Trim().Length == 0,
+            Legacy = true,
             Run = CrackGeode
         }
     };
 
+    private static List<Item> CarriedGeodes() => P.Items.Where(i => i != null && IsGeode(i)).ToList();
+
     private static IEnumerator CrackGeode(JsonElement a, CallContext c)
     {
         var want = S(a, "item").Trim();
-        var carried = P.Items.Where(i => i != null && IsGeode(i)).ToList();
+        var carried = CarriedGeodes();
         if (want.Length == 0)
         {
             c.Result = carried.Count == 0
                 ? "You carry no geodes. Mine them (stones in the mines), fish or dig them up, then bring them to Clint at the Blacksmith."
-                : $"Geodes you carry: {Stacks(carried)}. Clint cracks one for {GeodeFee}g at the Blacksmith (crack_geode with the name).";
+                : $"Geodes you carry: {Stacks(carried)}. Clint cracks one for {GeodeFee}g at the Blacksmith (crack_geodes with the name).";
             yield break;
         }
 
+        yield return CrackGeodesAtClint(want, I(a, "quantity", 1), c);
+    }
+
+    /// <summary>The shared Clint-cracking loop behind crack_geode and the semantic crack_geodes (docs/tool-decoupling/README.md).</summary>
+    private static IEnumerator CrackGeodesAtClint(string want, int qty, CallContext c)
+    {
+        var carried = CarriedGeodes();
         if (Loc.Name != "Blacksmith")
         {
             c.Fail($"Clint works in the Blacksmith; you are in {Loc.Name}. travel_to Blacksmith first (check his opening hours).");
@@ -71,7 +82,7 @@ public static partial class AgentTools
             yield break;
         }
 
-        int qty = Math.Clamp(I(a, "quantity", 1), 1, 99);
+        qty = Math.Clamp(qty, 1, 99);
         var qid = P.Items[first].QualifiedItemId;
         var label = P.Items[first].DisplayName;
         var found = new List<(string label, int count)>();

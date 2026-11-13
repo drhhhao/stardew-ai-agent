@@ -37,6 +37,7 @@ public static partial class AgentTools
                 reason = Str(ReasonDesc)
             }),
             InstantFor = a => S(a, "action").Trim().ToLowerInvariant() is "" or "list",
+            Legacy = true,
             Run = QuestJournal
         },
         new()
@@ -65,7 +66,17 @@ public static partial class AgentTools
     {
         var action = S(a, "action").Trim().ToLowerInvariant();
         if (action is "" or "list") { c.Result = QuestsText(a); yield break; }
-        if (action != "claim_reward") { c.Fail(Reasons.InvalidArgs, "action is list or claim_reward."); yield break; }
+        if (action != "claim_reward") { c.InvalidArgs("action is list or claim_reward.", "list", "claim_reward"); yield break; }
+        yield return ClaimQuestReward(a, c);
+    }
+
+    /// <summary>
+    /// Opens the journal and collects the money of a finished quest (shared by the legacy quests action=claim_reward and the
+    /// semantic claim_quest_reward): the game pays a finished quest only when the player clicks its reward there. Ported from
+    /// Pichaya31847/stardew-ai-agent (MIT, commit efc8be3).
+    /// </summary>
+    private static IEnumerator ClaimQuestReward(JsonElement a, CallContext c)
+    {
         if (Game1.activeClickableMenu != null) { c.Fail(Reasons.MenuOpen, "A menu or dialogue is open. Close it first."); yield break; }
         var title = S(a, "quest").Trim();
         var candidates = JournalRewards().Where(q => title.Length == 0 || string.Equals(q.GetName(), title, StringComparison.OrdinalIgnoreCase)).ToList();
@@ -73,7 +84,7 @@ public static partial class AgentTools
         {
             c.Fail(Reasons.NotFound, title.Length == 0
                 ? "No finished quest has money waiting in your journal."
-                : $"No finished quest called \"{title}\" has money waiting in your journal. quests lists the ones that do.");
+                : $"No finished quest called \"{title}\" has money waiting in your journal. list_quests lists the ones that do.");
             yield break;
         }
         var target = candidates[0];
@@ -288,7 +299,7 @@ public static partial class AgentTools
         var rewards = JournalRewards().ToList();
         if (rewards.Count > 0)
         {
-            sb.AppendLine("Finished, money not collected yet (quests with action=claim_reward collects it):");
+            sb.AppendLine("Finished, money not collected yet (claim_quest_reward collects it):");
             foreach (var r in rewards) sb.AppendLine($"  {r.GetName()}: {r.GetMoneyReward()}g");
         }
         sb.AppendLine(BoardText());
@@ -317,7 +328,7 @@ public static partial class AgentTools
         var (state, who) = BoardState(board);
         if (state == "mine")
         {
-            c.Result = $"You already took \"{name}\". quests shows it.";
+            c.NoChange($"You already took \"{name}\". quests shows it.");
             yield break;
         }
         if (state == "taken")

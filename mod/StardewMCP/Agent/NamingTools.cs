@@ -71,8 +71,8 @@ public static class Naming
             return;
         }
 
-        // The overnight sequence (a baby's name) is answered through go_to_bed, which hands the box to the AI.
-        bool sleeping = Game1.player.isInBed.Value || Game1.newDay || rt.CurrentTool == "go_to_bed";
+        // The overnight sequence (a baby's name) is answered through sleep (go_to_bed), which hands the box to the AI.
+        bool sleeping = Game1.player.isInBed.Value || Game1.newDay || ToolCatalog.IsSleep(rt.CurrentTool);
         if (!sleeping && Game1.timeOfDay >= LastCall)
         {
             AutoName(rt, nm, "not named before 1:00 AM");
@@ -109,10 +109,8 @@ public static class Naming
             AutoName(rt, nm, why);
     }
 
-    /// <summary>
-    /// go_to_bed's wait loop: a naming box came up during the night (a new child). Ends the call so the AI can
-    /// answer with name(text); the night goes on afterwards.
-    /// </summary>
+    /// <summary>sleep's wait loop (go_to_bed's): a naming box came up during the night (a new child). Ends the call so the AI can
+    /// answer with name(text); the night goes on afterwards.</summary>
     internal static bool NightPrompt(CallContext c)
     {
         if (Game1.activeClickableMenu is not NamingMenu nm) return false;
@@ -132,7 +130,7 @@ public static partial class AgentTools
             Description = "Choose the name the open naming box asks for: a new pet, farm animal, horse or child. The status shows a \"Naming:\" line while a box is open. " +
                           $"At most {Naming.MaxLength} characters. Costs no game time. A box you never answer gets a random name at bedtime.",
             Schema = Obj(new { text = Str("The name") }, "text"),
-            Instant = true,
+            Instant = true, Mutates = true, Serialized = true,
             Run = NameIt
         }
     };

@@ -153,12 +153,7 @@ internal static class ChestLedger
         Load();
         var sb = new StringBuilder("Chests on the farm:");
         int n = 0;
-        var farm = Game1.getFarm();
-        var places = new List<GameLocation> { farm };
-        if (Game1.getLocationFromName("FarmHouse") is { } house) places.Add(house);
-        if (Game1.getLocationFromName("Greenhouse") is { } greenhouse) places.Add(greenhouse);
-        places.AddRange(farm.buildings.Select(b => b.GetIndoors()).Where(l => l != null)!);
-        foreach (var loc in places.Distinct())
+        foreach (var loc in FarmPlaces())
         {
             foreach (var (tile, obj) in loc.objects.Pairs)
             {
@@ -182,6 +177,54 @@ internal static class ChestLedger
                 sb.Append($"\n- day {g.Key.Day} {g.Key.Time}: {g.Key.Farmer} {Describe(g)} {OwnerWords(g.Key.Owner, g.Key.Seat)} chest at {g.Key.Location} ({g.Key.X},{g.Key.Y})");
         }
         return sb.ToString();
+    }
+
+    /// <summary>The farm, the farmhouse, the greenhouse and the inside of every farm building (cabins, sheds, barns...).</summary>
+    private static List<GameLocation> FarmPlaces()
+    {
+        var farm = Game1.getFarm();
+        var places = new List<GameLocation> { farm };
+        if (Game1.getLocationFromName("FarmHouse") is { } house) places.Add(house);
+        if (Game1.getLocationFromName("Greenhouse") is { } greenhouse) places.Add(greenhouse);
+        places.AddRange(farm.buildings.Select(b => b.GetIndoors()).Where(l => l != null)!);
+        return places.Distinct().ToList();
+    }
+
+    /// <summary>A chest that stores items: not a Mini-Shipping Bin (shipped overnight), Hopper or Enricher (fed to machines).</summary>
+    public static bool IsStorage(Chest chest) =>
+        chest.playerChest.Value && chest.SpecialChestType is Chest.SpecialChestTypes.None or Chest.SpecialChestTypes.BigChest or Chest.SpecialChestTypes.JunimoChest;
+
+    /// <summary>
+    /// Every stack stored on the farm: placed chests and mini-fridges, and the kitchen fridge of the farmhouse and cabins, with
+    /// where it is ("Farm chest (64,15)", "FarmHouse fridge", "Shed (12,8) chest (5,6)": a building by its tile, not its unique
+    /// name). A shared inventory (Junimo chests) is counted once. Mini-Shipping Bins and Hoppers are left out: what they hold is
+    /// shipped overnight or fed to a machine.
+    /// </summary>
+    public static List<(Item item, string where)> StoredItems()
+    {
+        var list = new List<(Item, string)>();
+        var seen = new HashSet<object>(ReferenceEqualityComparer.Instance);
+        void Add(Chest chest, string where)
+        {
+            var items = chest.GetItemsForPlayer();
+            if (!seen.Add(items)) return;
+            foreach (var it in items)
+                if (it != null) list.Add((it, where));
+        }
+        void AddPlace(GameLocation loc, string name)
+        {
+            if (loc.GetFridge() is { } fridge) Add(fridge, $"{name} fridge");
+            foreach (var (tile, obj) in loc.objects.Pairs)
+                if (obj is Chest chest && IsStorage(chest))
+                    Add(chest, $"{name} {(chest.fridge.Value ? "fridge" : "chest")} ({(int)tile.X},{(int)tile.Y})");
+        }
+        var farm = Game1.getFarm();
+        var done = new HashSet<GameLocation>();
+        foreach (var loc in new[] { farm, Game1.getLocationFromName("FarmHouse"), Game1.getLocationFromName("Greenhouse") })
+            if (loc != null && done.Add(loc)) AddPlace(loc, loc.NameOrUniqueName);
+        foreach (var b in farm.buildings)
+            if (b.GetIndoors() is { } inside && done.Add(inside)) AddPlace(inside, $"{inside.Name} ({b.tileX.Value},{b.tileY.Value})");
+        return list;
     }
 
     /// <summary>What others changed in this chest since <paramref name="me"/> last touched it, for the chest tool's result; "" when none.</summary>

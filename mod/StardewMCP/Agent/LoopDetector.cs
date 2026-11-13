@@ -53,9 +53,11 @@ public sealed class GuardNote
 /// think...) only observe, so they neither start nor end a streak.
 ///
 /// No-progress detector: <c>noProgressAfter</c> calls in a row (25 by default) with an unchanged snapshot
-/// (game time, inventory, position) get a hint. A successful action (not instant) counts as progress too.
+/// (game time, inventory, position) get a hint. A successful action (not instant) counts as progress too —
+/// unless the call reports Changed explicitly: Changed=true always counts, Changed=false (e.g. reason
+/// <c>no_change</c>) never counts as progress just for being a "successful action".
 ///
-/// Tests: mod/StardewMCP.Tests/LoopDetectorTests.cs; runner/smoke.py case "loop_guard" covers it in game.
+/// Tests: mod/StardewMCP.Tests/LoopDetectorTests.cs and OutcomeRulesTests.cs; runner/smoke.py case "loop_guard" covers it in game.
 /// </summary>
 public sealed class LoopDetector
 {
@@ -134,7 +136,9 @@ public sealed class LoopDetector
     /// its result: the repeat hint and/or the no-progress hint.
     /// </summary>
     /// <param name="snapshot">Opaque summary of game time, inventory and position at the end of the call.</param>
-    public List<GuardNote> After(string key, bool instant, bool ok, string result, string snapshot)
+    /// <param name="changed">Whether the call changed game state, when the tool reported it (reason <c>no_change</c>
+    /// reports false). Null keeps the old rule: any successful non-instant call counts as progress.</param>
+    public List<GuardNote> After(string key, bool instant, bool ok, string result, string snapshot, bool? changed = null)
     {
         Roll();
         var notes = new List<GuardNote>();
@@ -158,7 +162,7 @@ public sealed class LoopDetector
 
         if (NoProgressAfter > 0)
         {
-            bool progressed = (!instant && ok) || snapshot != _lastSnapshot;
+            bool progressed = OutcomeRules.IsProgress(changed, instant, ok, snapshot != _lastSnapshot);
             _lastSnapshot = snapshot;
             if (progressed)
                 _quietCalls = 0;

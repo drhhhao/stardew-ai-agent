@@ -23,17 +23,36 @@ public static partial class AgentTools
         new()
         {
             Name = "watch_tv",
-            Description = "Watch a channel on the TV in the room you are in (your farmhouse has one). Channels: weather (tomorrow's forecast), fortune (tomorrow's luck), " +
-                          "queen of sauce (airs on Sundays; teaches a cooking recipe), livin' off the land (farming tips). Leave channel empty to list the channels on right now. " +
-                          "Watching takes a little game time and costs no energy. The result gives the text the TV showed and any recipe you learned.",
+            Description = "Watch a channel on the TV in the room you are in (your farmhouse has one). Channels: weather (tomorrow's forecast, including festivals), " +
+                          "fortune (today's luck, in Welwick's words), queen of sauce (Sunday: a new cooking recipe; Wednesday after the first week: the rerun), " +
+                          "livin' off the land (Monday and Thursday: seasonal tips), fishing (after Pam's letter: this season's fish, hours, weather and where). " +
+                          "Leave channel empty to list the channels on right now. Watching takes a little game time and costs no energy; the result gives the text and any recipe learned.",
             Schema = Obj(new
             {
-                channel = Str("weather, fortune, queen (of sauce) or livin (off the land); empty lists the channels"),
+                channel = Str("weather, fortune, queen (of sauce), livin (off the land) or fishing; empty lists the channels"),
                 reason = Str(ReasonDesc)
             }),
             Run = WatchTv
         }
     };
+
+    /// <summary>
+    /// The morning-briefing reminder: which channels are on today, so the AI does not walk past the TV. Empty when the
+    /// room it wakes in has no TV.
+    /// </summary>
+    public static string TvBriefingLine()
+    {
+        var p = Game1.player;
+        if (p == null || Game1.currentLocation == null || !Game1.currentLocation.furniture.OfType<TV>().Any())
+            return "";
+        var channels = new List<string> { "weather (tomorrow's forecast)", "fortune (today's luck)" };
+        string day = Game1.shortDayNameFromDayOfSeason(Game1.dayOfMonth);
+        if (day is "Mon" or "Thu") channels.Add("Livin' Off The Land tip");
+        if (day == "Sun") channels.Add("Queen of Sauce recipe");
+        if (day == "Wed" && Game1.stats.DaysPlayed > 7) channels.Add("Queen of Sauce rerun");
+        if (p.mailReceived.Contains("pamNewChannel")) channels.Add("fishing info");
+        return $"TV in the farmhouse: {string.Join(", ", channels)}. Use watch_tv before you leave (it costs a little game time, no energy).";
+    }
 
     /// <summary>Index of the channel in the TV's answers: by alias first (weather, luck, recipe...), else by words of the text.</summary>
     private static int TvPick(IList<string> options, string channel)
@@ -46,6 +65,7 @@ public static partial class AgentTools
         else if (Mentions("fortune", "luck", "spirit")) keys = new[] { "fortune" };
         else if (Mentions("queen", "sauce", "recipe", "cook")) keys = new[] { "queen", "sauce" };
         else if (Mentions("livin", "land", "tip", "farming")) keys = new[] { "livin", "land" };
+        else if (Mentions("fish", "fishing", "f.i.b.s")) keys = new[] { "fish" };
         else keys = new[] { want };
         for (int i = 0; i < options.Count; i++)
         {

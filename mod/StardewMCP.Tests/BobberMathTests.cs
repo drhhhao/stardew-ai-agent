@@ -78,15 +78,13 @@ public class BobberMathTests
     }
 
     [Fact]
-    public void Treasure_hysteresis()
+    public void Treasure_choice_is_made_once_from_distance_and_progress()
     {
-        Assert.False(BobberMath.ChaseTreasure(false, 0f, false, 0.9f, false));
-        Assert.False(BobberMath.ChaseTreasure(true, 100f, false, 0.9f, false)); // not appeared yet
-        Assert.False(BobberMath.ChaseTreasure(true, 0f, true, 0.9f, true)); // already caught
-        Assert.False(BobberMath.ChaseTreasure(true, 0f, false, 0.5f, false)); // not full enough to start
-        Assert.True(BobberMath.ChaseTreasure(true, 0f, false, 0.6f, false));
-        Assert.True(BobberMath.ChaseTreasure(true, 0f, false, 0.5f, true)); // keeps going while above the stop level
-        Assert.False(BobberMath.ChaseTreasure(true, 0f, false, 0.3f, true));
+        Assert.False(BobberMath.TreasureWorthChasing(0.5f, 100f, 110f, 120f)); // not enough progress yet
+        Assert.True(BobberMath.TreasureWorthChasing(0.6f, 100f, 110f, 120f));  // close enough to cover both
+        Assert.False(BobberMath.TreasureWorthChasing(0.6f, 100f, 400f, 120f)); // far chest: do not ping-pong
+        Assert.False(BobberMath.TreasureWorthChasing(0.9f, 100f, 300f, 50f));  // far in bar-height terms too
+        Assert.True(BobberMath.TreasureWorthChasing(0.9f, 100f, 150f, 120f));
     }
 
     // ------------------------------------------------------------------ cast math

@@ -14,10 +14,17 @@ using StardewValley.Menus;
 namespace StardewMCP.Agent;
 
 /// <summary>
-/// Robin's carpenter shop (#10): <c>build</c> orders a farm building and <c>upgrade_house</c> the next house level.
+/// Robin's carpenter shop (#10): the Phase 2 semantic building tools (docs/tool-decoupling/README.md) are registered in
+/// Agent/SemanticTools.cs and implemented in Agent/Semantic/BuildingTools.cs — list_buildings (catalog),
+/// suggest_building_site (free spots for a NEW building), construct_building (pay and start a new building at x,y) and
+/// upgrade_building (upgrade an existing one). This file owns their shared bodies (RobinCatalog, ConstructBuildingAt,
+/// PickUpgradeTarget / UpgradeBuildingOrder, FreeSpots...) and the legacy compatibility entries <c>build</c> (all its old
+/// modes: list, spots, new building, upgrade; marked Legacy via ToolCatalog.SupersededBySemantic) and
+/// <c>upgrade_house</c> (the next house level).
 ///
 /// Robin's counter opens <c>CarpenterMenu</c>, which needs the mouse on a map preview. The tools skip the preview and call
-/// what the menu calls: <c>Farm.buildStructure</c> (the game checks the footprint and starts construction) and the answer to
+/// what the menu calls: <c>Farm.buildStructure</c> (the game checks the footprint and starts construction), the menu's
+/// upgrade step (set <c>upgradeName</c> and <c>daysUntilUpgrade</c>, then <c>MarkUnderConstruction</c>) and the answer to
 /// Robin's "Upgrade your house?" question (<c>upgrade_Yes</c>). The costs come from the game's own building data
 /// (<c>Game1.buildingData</c>); the tool pays them from the calling farmer's wallet and inventory, as the menu does.
 /// Robin is gated like the shop door and counter are: the farmer must stand in her shop while she is there and open.
@@ -29,18 +36,26 @@ public static partial class AgentTools
         new()
         {
             Name = "build",
-            Description = "Order a farm building from Robin (the carpenter, ScienceHouse in the Mountain; you must be inside her shop while it is open, about 9:00-17:00, and she is not busy). " +
-                          "building=list shows what she builds with gold and material costs, build days and whether you can afford each. " +
-                          "building=<name> without x,y suggests free spots on your farm. building=<name> with x,y (the TOP-LEFT tile of its footprint on the Farm) pays from your own money and inventory " +
-                          "and starts construction; the building can be used after its build days (Robin works overnight, one project at a time). House upgrades use upgrade_house; animals use buy_animal.",
+            Description = "Order a farm building or a building upgrade from Robin (the carpenter, ScienceHouse in the Mountain; you must be inside her shop while it is open, about 9:00-17:00, and she is not busy). " +
+                          "building=list shows what she builds and upgrades, with gold and material costs, build days, whether you can afford each and which of your buildings can take each upgrade. " +
+                          "New building: building=<name> without x,y suggests free spots on your farm; with x,y (the TOP-LEFT tile of its footprint on the Farm) it pays and starts construction. " +
+                          "Upgrade (Big Coop, Deluxe Coop, Big Barn, Deluxe Barn, Big Shed...: a Coop becomes a Big Coop, a Big Coop a Deluxe Coop): building=<upgrade> upgrades your only building that can take it; " +
+                          "if several can, it lists them and you add x,y = any tile of the one to upgrade. Animals stay inside while it is upgraded. " +
+                          "Everything is paid from your own money and inventory; Robin works overnight, one project at a time, and takes festival days off. House upgrades use upgrade_house; animals use buy_animal.",
             Schema = Obj(new
             {
-                building = Str("Building name as build(building=list) shows it, e.g. Coop, Barn, Silo, Well, Shed; or \"list\""),
-                x = Int("Top-left tile x of the footprint on the Farm"),
-                y = Int("Top-left tile y of the footprint on the Farm"),
+                building = Str("Building or upgrade name as build(building=list) shows it, e.g. Coop, Barn, Silo, Well, Shed, Big Coop, Deluxe Barn; or \"list\""),
+                x = Int("New building: top-left tile x of the footprint on the Farm. Upgrade: x of any tile of the building to upgrade"),
+                y = Int("New building: top-left tile y of the footprint on the Farm. Upgrade: y of any tile of the building to upgrade"),
                 reason = Str(ReasonDesc)
             }, "building", "reason"),
-            InstantFor = a => !(Has(a, "x") && Has(a, "y")),
+            // Decided on the HTTP thread, from the arguments only: a listing or spot suggestion just reads, an upgrade acts even without x,y.
+            InstantFor = a =>
+            {
+                var b = S(a, "building").Trim();
+                if (b.Length == 0 || b.Equals("list", StringComparison.OrdinalIgnoreCase)) return true;
+                return !(Has(a, "x") && Has(a, "y")) && !UpgradeRules.LooksLikeUpgrade(b, KnownUpgradeNames);
+            },
             Run = Build
         },
         new()
@@ -55,9 +70,19 @@ public static partial class AgentTools
 
     // ------------------------------------------------------------------ catalog
 
-    private sealed record BuildSpec(string Id, string Name, int Cost, List<(string ItemId, string Label, int Amount)> Materials, int Days, int Width, int Height);
+    /// <param name="UpgradeFrom">For an upgrade (<c>BuildingData.BuildingToUpgrade</c>): the building type it upgrades; null for a new building.</param>
+    private sealed record BuildSpec(string Id, string Name, int Cost, List<(string ItemId, string Label, int Amount)> Materials, int Days, int Width, int Height, string? UpgradeFrom = null)
+    {
+        public bool IsUpgrade => !string.IsNullOrEmpty(UpgradeFrom);
+    }
 
-    /// <summary>What Robin builds from scratch, read from the game's building data (upgrades such as Big Coop are not included).</summary>
+    /// <summary>
+    /// Ids and names of Robin's upgrades as last read from the game's data, for <c>build</c>'s InstantFor on the HTTP
+    /// thread (an immutable array swapped whole, so reading it there is safe). Empty until the catalog is first read.
+    /// </summary>
+    private static volatile string[] KnownUpgradeNames = Array.Empty<string>();
+
+    /// <summary>What Robin builds and upgrades, read from the game's building data as CarpenterMenu reads it.</summary>
     private static List<BuildSpec> RobinCatalog()
     {
         var list = new List<BuildSpec>();
@@ -66,7 +91,6 @@ public static partial class AgentTools
             var d = kv.Value;
             if (d == null) continue;
             if (!(RanchReflect.Str(d, "Builder") ?? "").Equals("Robin", StringComparison.OrdinalIgnoreCase)) continue;
-            if (!string.IsNullOrEmpty(RanchReflect.Str(d, "BuildingToUpgrade"))) continue;
             if (RanchReflect.CheckConditions(RanchReflect.Str(d, "BuildCondition")) == false) continue;
 
             var mats = new List<(string ItemId, string Label, int Amount)>();
@@ -80,14 +104,26 @@ public static partial class AgentTools
                 }
             if (!RanchReflect.TryPoint(d, "Size", out int w, out int h) || w <= 0 || h <= 0) { w = 3; h = 3; }
             var name = RanchReflect.DisplayText(RanchReflect.Str(d, "Name"), kv.Key);
-            list.Add(new BuildSpec(kv.Key, name, d.BuildCost, mats, RanchReflect.Int(d, "BuildDays") ?? 0, w, h));
+            var from = RanchReflect.Str(d, "BuildingToUpgrade");
+            list.Add(new BuildSpec(kv.Key, name, d.BuildCost, mats, RanchReflect.Int(d, "BuildDays") ?? 0, w, h, string.IsNullOrEmpty(from) ? null : from));
         }
-        return list.OrderBy(s => s.Cost).ThenBy(s => s.Name).ToList();
+        KnownUpgradeNames = list.Where(s => s.IsUpgrade).SelectMany(s => new[] { s.Id, s.Name }).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        return list.OrderBy(s => s.IsUpgrade).ThenBy(s => s.Cost).ThenBy(s => s.Name).ToList();
     }
 
     private static BuildSpec? FindSpec(List<BuildSpec> all, string want) =>
         all.FirstOrDefault(s => s.Id.Equals(want, StringComparison.OrdinalIgnoreCase) || s.Name.Equals(want, StringComparison.OrdinalIgnoreCase))
         ?? all.FirstOrDefault(s => s.Id.Contains(want, StringComparison.OrdinalIgnoreCase) || s.Name.Contains(want, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>RobinCatalog + FindSpec with the standard failures (empty catalog, unknown name); null when <paramref name="c"/> failed. Used by the semantic building tools.</summary>
+    private static BuildSpec? FindRobinSpec(string want, CallContext c, out List<BuildSpec> catalog)
+    {
+        catalog = RobinCatalog();
+        if (catalog.Count == 0) { c.Fail("Could not read Robin's building list from the game data (Game1.buildingData has no Robin buildings)."); return null; }
+        var spec = FindSpec(catalog, want);
+        if (spec == null) { c.Fail($"Robin doesn't build \"{want}\". She builds: {string.Join(", ", catalog.Select(s => s.Name))}."); return null; }
+        return spec;
+    }
 
     private static bool MatchesId(Item it, string id) => it.QualifiedItemId == id || it.QualifiedItemId == "(O)" + id;
 
@@ -153,8 +189,11 @@ public static partial class AgentTools
         {
             int left = RanchText.DaysOfConstructionLeft(b), up = RanchText.DaysUntilUpgrade(b);
             if (left > 0) return $"Robin is busy building the {b.buildingType.Value} at ({b.tileX.Value},{b.tileY.Value}) ({left} day(s) left). She takes one project at a time: come back when it is finished.";
-            if (up > 0) return $"Robin is busy upgrading the {b.buildingType.Value} ({up} day(s) left). She takes one project at a time: come back when it is finished.";
+            if (up > 0) return $"Robin is busy upgrading the {b.buildingType.Value} at ({b.tileX.Value},{b.tileY.Value}) ({up} day(s) left). She takes one project at a time: come back when it is finished.";
         }
+        // The game's own rule at her counter (GameLocation.carpenters): no building menu while she has a project anywhere.
+        if (Game1.IsThereABuildingUnderConstruction("Robin"))
+            return "Robin is busy with another building project. She takes one project at a time: come back when it is finished.";
         if (P.daysUntilHouseUpgrade.Value > 0)
             return $"Robin is busy upgrading your house ({P.daysUntilHouseUpgrade.Value} day(s) left). She takes one project at a time.";
         return null;
@@ -167,15 +206,37 @@ public static partial class AgentTools
     private static IEnumerator Build(JsonElement a, CallContext c)
     {
         var want = S(a, "building").Trim();
+        // The lane the runtime chose when the call was queued; KnownUpgradeNames may have changed since (another catalog read).
+        bool ranInstant = c.Instant;
         var catalog = RobinCatalog();
         if (catalog.Count == 0) { c.Fail("Could not read Robin's building list from the game data (Game1.buildingData has no Robin buildings)."); yield break; }
-        if (want.Length == 0 || want.Equals("list", StringComparison.OrdinalIgnoreCase)) { c.Result = BuildList(catalog); yield break; }
+        if (want.Length == 0 || want.Equals("list", StringComparison.OrdinalIgnoreCase)) { c.Result = BuildList(catalog, BuildHintsLegacy); yield break; }
 
         var spec = FindSpec(catalog, want);
         if (spec == null) { c.Fail($"Robin doesn't build \"{want}\". She builds: {string.Join(", ", catalog.Select(s => s.Name))}."); yield break; }
+        if (spec.IsUpgrade) { yield return UpgradeBuilding(spec, a, c, ranInstant, ShownName(catalog)); yield break; }
         if (!(Has(a, "x") && Has(a, "y"))) { c.Result = BuildSpots(spec); yield break; }
 
         int x = I(a, "x", -1), y = I(a, "y", -1);
+        yield return ConstructBuildingAt(spec, x, y, c, $"Nothing was charged. build(building=\"{spec.Name}\") without x,y suggests free spots.");
+    }
+
+    /// <summary>The tool names <see cref="BuildList"/> mentions when pointing at the next step: legacy wording for the old build tool.</summary>
+    private static readonly (string UpgradeExample, string SpotsLine) BuildHintsLegacy =
+        ("build(building=\"Big Coop\")", "build(building=\"Coop\") suggests free spots; add x,y to order it.");
+
+    /// <summary>The tool names <see cref="BuildList"/> mentions for the semantic tools (list_buildings/suggest_building_site/construct_building/upgrade_building).</summary>
+    private static readonly (string UpgradeExample, string SpotsLine) BuildHintsSemantic =
+        ("upgrade_building(building=\"Big Coop\")", "suggest_building_site(building=\"Coop\") suggests free spots; construct_building(building=\"Coop\", x, y) orders it.");
+
+    /// <summary>
+    /// Pays for and starts a NEW building at the top-left tile (<paramref name="x"/>, <paramref name="y"/>), shared by the legacy
+    /// <c>build</c> and <c>construct_building</c>: Robin's shop gate, the affordability check, the Farm bounds, then the game's own
+    /// <c>buildStructure</c> (which checks the footprint); on success the menu's payment order. <paramref name="spotsHint"/> is the
+    /// "where to find free spots" line of the blocked-footprint failure, worded for the calling tool.
+    /// </summary>
+    private static IEnumerator ConstructBuildingAt(BuildSpec spec, int x, int y, CallContext c, string spotsHint)
+    {
         var closed = RobinGate();
         if (closed != null) { c.Fail(closed); yield break; }
 
@@ -200,7 +261,7 @@ public static partial class AgentTools
             var blockers = BuildBlockers(farm, x, y, spec.Width, spec.Height);
             c.Fail($"Robin can't build a {spec.Name} at ({x},{y}): the {spec.Width}x{spec.Height} footprint (x {x}-{x + spec.Width - 1}, y {y}-{y + spec.Height - 1}) must be free, buildable ground." +
                    (blockers.Length > 0 ? $" Probably in the way: {blockers}." : "") +
-                   $" Nothing was charged. build(building=\"{spec.Name}\") without x,y suggests free spots.");
+                   $" {spotsHint}");
             yield break;
         }
 
@@ -255,19 +316,164 @@ public static partial class AgentTools
         return (false, false, null, null);
     }
 
-    private static string BuildList(List<BuildSpec> catalog)
+    /// <summary>What Robin builds and upgrades (costs, affordability, upgrade takers). <paramref name="hints"/> names the tools to call next, worded for the caller (legacy build vs the semantic tools).</summary>
+    private static string BuildList(List<BuildSpec> catalog, (string UpgradeExample, string SpotsLine) hints)
     {
         var sb = new StringBuilder($"Robin builds these (you have {P.Money:N0}g). x,y is the top-left tile of the footprint on the Farm; keep the tiles below it walkable so the door can be reached:\n");
-        foreach (var s in catalog)
+        foreach (var s in catalog.Where(s => !s.IsUpgrade))
         {
             var lacking = Shortfall(s.Cost, s.Materials);
             sb.AppendLine($"  {s.Name}{(s.Name.Equals(s.Id, StringComparison.OrdinalIgnoreCase) ? "" : $" (id {s.Id})")}: {CostText(s.Cost, s.Materials)} · {s.Days} day(s) · {s.Width}x{s.Height} tiles · " +
                           (lacking.Length == 0 ? "you can afford it" : $"you lack {lacking}"));
         }
+        var upgrades = catalog.Where(s => s.IsUpgrade).ToList();
+        if (upgrades.Count > 0)
+        {
+            var farm = FarmBuildings(Game1.getFarm()).Select(t => t.info).ToList();
+            var shown = ShownName(catalog);
+            sb.AppendLine($"Upgrades of a building you already have (it keeps its place, size and animals and gets more room). {hints.UpgradeExample} upgrades your only matching building; with several, add x,y = any tile of the one to upgrade:");
+            foreach (var s in upgrades)
+            {
+                var lacking = Shortfall(s.Cost, s.Materials);
+                sb.AppendLine($"  {s.Name}{(s.Name.Equals(s.Id, StringComparison.OrdinalIgnoreCase) ? "" : $" (id {s.Id})")}, upgrades a {shown(s.UpgradeFrom!)}: {CostText(s.Cost, s.Materials)} · {Math.Max(s.Days, 1)} day(s) · " +
+                              $"{UpgradeRules.Takers(farm, s.UpgradeFrom!, shown)} · " + (lacking.Length == 0 ? "you can afford it" : $"you lack {lacking}"));
+            }
+        }
         var busy = RobinBusyReason();
         if (busy != null) sb.AppendLine(busy);
-        sb.Append("Upgrades of built coops and barns (Big Coop, Deluxe Barn...) are not available yet. House upgrades: upgrade_house. build(building=\"Coop\") suggests free spots; add x,y to order it.");
+        sb.Append($"House upgrades: upgrade_house. {hints.SpotsLine}");
         return sb.ToString();
+    }
+
+    // ------------------------------------------------------------------ upgrade
+
+    /// <summary>The Farm's buildings, each with what the game-free upgrade rules need to know about it.</summary>
+    private static List<(Building building, FarmBuilding info)> FarmBuildings(Farm farm) =>
+        farm.buildings.Where(b => b != null).Select(b => (b, new FarmBuilding(b.buildingType.Value ?? "", b.tileX.Value, b.tileY.Value,
+            b.tilesWide.Value, b.tilesHigh.Value, Math.Max(b.daysOfConstructionLeft.Value, b.daysUntilUpgrade.Value),
+            b.daysUntilUpgrade.Value > 0 ? b.upgradeName.Value : null))).ToList();
+
+    /// <summary>A building type id as Robin's catalog shows it ("Big Coop" in the game's language); other ids as they are.</summary>
+    private static Func<string, string> ShownName(List<BuildSpec> catalog) =>
+        id => catalog.FirstOrDefault(s => s.Id.Equals(id, StringComparison.OrdinalIgnoreCase))?.Name ?? id;
+
+    /// <summary>
+    /// Picks the building <paramref name="spec"/> (an upgrade) applies to, from the call's optional x,y: the Farm's buildings as
+    /// <see cref="UpgradeRules"/> needs them, the building at the tile (<c>getBuildingAt</c>), and the game-free safety choice.
+    /// Shared by the legacy <c>build</c> and <c>upgrade_building</c>.
+    /// </summary>
+    private static UpgradeChoice PickUpgradeTarget(BuildSpec spec, JsonElement a, List<BuildSpec> catalog, Farm farm)
+    {
+        var all = FarmBuildings(farm);
+        bool hasTile = Has(a, "x") && Has(a, "y");
+        int x = I(a, "x", -1), y = I(a, "y", -1);
+        FarmBuilding? atTile = null;
+        if (hasTile)
+        {
+            var found = farm.getBuildingAt(new Vector2(x, y));
+            if (found != null) atTile = all.FirstOrDefault(t => ReferenceEquals(t.building, found)).info;
+        }
+        return UpgradeRules.Choose(all.Select(t => t.info).ToList(), spec.Name, spec.UpgradeFrom!, hasTile, x, y, atTile, spec.Id, ShownName(catalog));
+    }
+
+    /// <summary>
+    /// Robin's upgrade of an existing building, as CarpenterMenu's Upgrade action does it in 1.6.15: the building at the
+    /// chosen tile (<c>getBuildingAt</c>) must be of type <c>BuildingToUpgrade</c>; the menu then takes the materials and
+    /// gold (<c>ConsumeResources</c>), sets <c>upgradeName</c> and <c>daysUntilUpgrade = max(BuildDays, 1)</c>, shows the
+    /// upgrade sign, announces it in chat and registers Robin's project (<c>MarkUnderConstruction</c>), or finishes at once
+    /// when the data has no build days. The upgrade lands overnight in <c>Building.dayUpdate</c>, which skips festival days.
+    /// <paramref name="ranInstant"/> is the legacy two-step flow: the call ran in the read-only lane (the name was not yet
+    /// known as an upgrade), so it only names the building and asks for a confirming call.
+    /// </summary>
+    private static IEnumerator UpgradeBuilding(BuildSpec spec, JsonElement a, CallContext c, bool ranInstant, Func<string, string> shown)
+    {
+        var farm = Game1.getFarm();
+        var choice = PickUpgradeTarget(spec, a, RobinCatalog(), farm);
+        var cost = $"A {spec.Name} costs {CostText(spec.Cost, spec.Materials)} and takes {Math.Max(spec.Days, 1)} day(s).";
+        if (choice.Decision == UpgradeDecision.Refuse) { c.Fail(choice.Message); yield break; }
+        if (choice.Decision == UpgradeDecision.NeedTile) { c.Result = $"{cost}\n{choice.Message}"; yield break; }
+        var target = farm.getBuildingAt(new Vector2(choice.Target!.X, choice.Target.Y));
+        if (target == null) { c.Fail($"The building to upgrade was not found on the Farm. Nothing was ordered."); yield break; }
+        int tx = target.tileX.Value, ty = target.tileY.Value;
+        if (ranInstant)
+        {
+            // This call ran in the read-only lane (the name was not yet known as an upgrade): name the building, order on the next call.
+            c.Result = $"{cost}\nIt would upgrade your {shown(spec.UpgradeFrom!)} at ({tx},{ty}). Call build(building=\"{spec.Name}\", x={tx}, y={ty}) to order it.";
+            yield break;
+        }
+        yield return UpgradeBuildingOrder(farm, target, spec, c, shown);
+    }
+
+    /// <summary>
+    /// Orders the chosen upgrade: Robin's shop gate, the affordability check, then the menu's upgrade step on
+    /// <paramref name="target"/> (see <see cref="StartUpgrade"/>). Shared by the legacy <c>build</c> and
+    /// <c>upgrade_building</c>; the target choice and its safety checks happen before this (see
+    /// <see cref="PickUpgradeTarget"/> / <see cref="UpgradeRules.Choose"/>).
+    /// </summary>
+    private static IEnumerator UpgradeBuildingOrder(Farm farm, Building target, BuildSpec spec, CallContext c, Func<string, string> shown)
+    {
+        int tx = target.tileX.Value, ty = target.tileY.Value;
+        var closed = RobinGate();
+        if (closed != null) { c.Fail(closed); yield break; }
+        var lacking = Shortfall(spec.Cost, spec.Materials);
+        if (lacking.Length > 0) { c.Fail($"Can't afford a {spec.Name} ({CostText(spec.Cost, spec.Materials)}): you need {lacking}."); yield break; }
+
+        var error = StartUpgrade(farm, target, spec);
+        if (error != null) { c.Fail($"The upgrade did not start: {error}"); yield break; }
+        yield return Ticks(5);
+
+        string when;
+        if (target.daysUntilUpgrade.Value <= 0) when = $"It is a {shown(target.buildingType.Value)} now.";
+        else
+        {
+            when = $"It will be a {spec.Name} in {target.daysUntilUpgrade.Value} day(s); Robin works overnight and the {shown(spec.UpgradeFrom!)} and its animals stay usable meanwhile.";
+            if (Utility.isFestivalDay(Game1.dayOfMonth + 1, Game1.season))
+                when += " Tomorrow is a festival and Robin takes festival days off, so it takes one day longer.";
+        }
+        c.Result = $"Robin is upgrading your {shown(spec.UpgradeFrom!)} at ({tx},{ty}) into a {spec.Name}. {when} Paid {CostText(spec.Cost, spec.Materials)}. Money left {P.Money:N0}g.";
+    }
+
+    /// <summary>The menu's upgrade step on <paramref name="target"/>; null when it started, else why not. A plain method for the try/catch.</summary>
+    private static string? StartUpgrade(Farm farm, Building target, BuildSpec spec)
+    {
+        try
+        {
+            // CarpenterMenu.ConsumeResources: the materials, then the gold, from the calling farmer.
+            foreach (var m in spec.Materials) P.Items.ReduceId(m.ItemId, m.Amount);
+            P.Money -= spec.Cost;
+            target.upgradeName.Value = spec.Id;
+            target.daysUntilUpgrade.Value = Math.Max(spec.Days, 1);
+        }
+        catch (Exception ex)
+        {
+            return ex.Message;
+        }
+        try
+        {
+            target.showUpgradeAnimation(farm);
+            Game1.playSound("axe");
+            AnnounceBuild(spec.Id);
+        }
+        catch (Exception) { /* looks and chat only */ }
+        try
+        {
+            if (spec.Days < 1) target.FinishConstruction();
+            else Game1.netWorldState.Value.MarkUnderConstruction("Robin", target);
+        }
+        catch (Exception ex)
+        {
+            return $"it was paid and marked for upgrade, but the game failed to register Robin's project ({ex.Message}); check status tomorrow.";
+        }
+        return null;
+    }
+
+    /// <summary>The menu's chat line about the new project (<c>Multiplayer.globalChatInfoMessage("BuildingBuild", ...)</c>); Game1.multiplayer is not public.</summary>
+    private static void AnnounceBuild(string typeId)
+    {
+        var mp = HarmonyLib.AccessTools.Field(typeof(Game1), "multiplayer")?.GetValue(null);
+        if (mp == null || !Game1.buildingData.TryGetValue(typeId, out var data) || string.IsNullOrEmpty(data.Name)) return;
+        var args = new[] { P.Name, "aOrAn:" + data.Name, data.Name, P.farmName.Value };
+        RanchReflect.TryCall(mp, "globalChatInfoMessage", "BuildingBuild", args);
     }
 
     private static string BuildSpots(BuildSpec spec)

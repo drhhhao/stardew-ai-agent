@@ -40,7 +40,7 @@ public static class Bedtime
             Warned[seat.Id] = day;
             var time = WorldText.FormatTime(Game1.timeOfDay);
             SocialTools.Deliver(seat, $"[{time}] It is bedtime and you are not in bed. The day only ends when every player is asleep, so the others are waiting for you; " +
-                                      "at 2:00 AM you pass out and lose gold (up to a tenth of your money). Finish up and go_to_bed.");
+                                      "at 2:00 AM you pass out and lose gold (up to a tenth of your money). Finish up and sleep.");
             seat.Runtime.Log.Add("system", text: $"Bedtime warning sent to {seat.Id} at {time}");
         }
     }
@@ -51,7 +51,7 @@ public static class Bedtime
     private static void StartStalledNight()
     {
         var p = Game1.player;
-        bool stalled = Game1.netReady.IsReady("sleep") && p.isInBed.Value && Players.Host.Runtime.CurrentTool == "go_to_bed" &&
+        bool stalled = Game1.netReady.IsReady("sleep") && p.isInBed.Value && ToolCatalog.IsSleep(Players.Host.Runtime.CurrentTool) &&
                        p.timeWentToBed.Value > 0 && Game1.timeOfDay >= p.timeWentToBed.Value && // tonight's bedtime, never the morning after
                        !Game1.newDay && Game1.newDaySync?.hasInstance() != true &&
                        Game1.activeClickableMenu is not ReadyCheckDialog { checkName: "sleep" };

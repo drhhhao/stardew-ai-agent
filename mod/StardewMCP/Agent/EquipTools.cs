@@ -14,9 +14,10 @@ using SObject = StardewValley.Object;
 namespace StardewMCP.Agent;
 
 /// <summary>
-/// equip: rings, boots and hats go into the farmer's equipment slots (the old item goes back into the
-/// inventory); bait and tackle go onto a fishing rod through the rod's own attach logic. The status and
-/// inventory tools show the result via <see cref="EquipmentText"/>.
+/// equip: rings, boots and hats go into the farmer's equipment slots, shirts and pants into the clothing slots
+/// (the old item goes back into the inventory); bait and tackle go onto a fishing rod through the rod's own
+/// attach logic. The status and inventory tools show the result via <see cref="EquipmentText"/>; the wardrobe
+/// tool shows the clothing slots.
 /// Members of the game that could not be checked against the decompiled game are reached by reflection
 /// and listed in the PR, so a wrong guess fails with a message at run time instead of breaking the build.
 /// </summary>
@@ -29,12 +30,12 @@ public static partial class AgentTools
     private static ToolDef EquipTool() => new()
     {
         Name = "equip",
-        Description = "Put on an item from your inventory. A ring goes on your left or right hand, boots and hats into their slot; whatever was there goes back into your inventory. " +
-                      "Bait or tackle is attached to your fishing rod (bait in the first slot, tackle in the next free one); what was attached goes back into your inventory. " +
-                      "status and inventory show what you wear and what is on the rod.",
+        Description = "Put on or attach an item from your inventory: a ring on your left or right hand, boots, a hat, a shirt or pants " +
+                      "(whatever was worn goes back into your inventory); bait or tackle onto your fishing rod (what was attached goes back). " +
+                      "status and inventory show your equipment and what is on the rod; wardrobe shows hat, shirt and pants. This one tool covers everything wearable.",
         Schema = Obj(new
         {
-            item = Str("Item name from your inventory, e.g. \"Glow Ring\", \"Sneakers\", \"Cowboy Hat\", \"Bait\""),
+            item = Str("Item name from your inventory, e.g. \"Glow Ring\", \"Sneakers\", \"Cowboy Hat\", \"Formal Shirt\", \"Bait\""),
             slot = new { type = "string", @enum = new[] { "left", "right" }, description = "Rings only: which hand. Default: the empty one, else the left." },
             count = Int("Bait only: how many to attach (default: the whole stack; keep some if you want it for crab pots)"),
             reason = Str(ReasonDesc)
@@ -43,7 +44,7 @@ public static partial class AgentTools
     };
 
     private static bool EqIsEquippable(Item it) =>
-        it is Ring or Boots or Hat || (it is SObject o && (o.Category == EqBaitCategory || o.Category == EqTackleCategory));
+        it is Ring or Boots or Hat or Clothing || (it is SObject o && (o.Category == EqBaitCategory || o.Category == EqTackleCategory));
 
     private static string EqEquippableNames()
     {
@@ -54,10 +55,10 @@ public static partial class AgentTools
     private static IEnumerator EquipItem(JsonElement a, CallContext c)
     {
         var name = S(a, "item").Trim();
-        if (name.Length == 0) { c.Fail("Give the item to equip: a ring, boots, hat, bait or tackle from your inventory."); yield break; }
+        if (name.Length == 0) { c.Fail("Give the item to equip: a ring, boots, hat, shirt, pants, bait or tackle from your inventory."); yield break; }
         yield return WaitIdle();
         int slot = FindItem(name, EqIsEquippable);
-        if (slot < 0) { c.Fail($"No ring, boots, hat, bait or tackle called \"{name}\" in your inventory. Equippable now: {EqEquippableNames()}."); yield break; }
+        if (slot < 0) { c.Fail($"No ring, boots, hat, shirt, pants, bait or tackle called \"{name}\" in your inventory. Equippable now: {EqEquippableNames()}."); yield break; }
         EqDo(a, c, slot);
         if (!c.Ok) yield break;
         yield return Ticks(5);
@@ -101,6 +102,10 @@ public static partial class AgentTools
                     c.Result = EqDone(hat, "hat", old, slot);
                     break;
                 }
+                case Clothing clothes:
+                    // Shirts and pants share wear's swap, look update and log entry; only the result verb differs.
+                    PutOnClothing(clothes, slot, "Equipped", c);
+                    break;
                 case SObject bait:
                     EqAttach(slot, bait, a, c);
                     break;

@@ -31,12 +31,19 @@
   <ItemGroup>
     <Compile Include="..\StardewMCP\PathSearch.cs" Link="Mod\PathSearch.cs" />
     <Compile Include="..\StardewMCP\Agent\ToolDef.cs" Link="Mod\ToolDef.cs" />
+    <Compile Include="..\StardewMCP\Agent\OutcomeRules.cs" Link="Mod\OutcomeRules.cs" />
     <Compile Include="..\StardewMCP\Agent\ToolArgs.cs" Link="Mod\ToolArgs.cs" />
     <Compile Include="..\StardewMCP\Agent\ToolContract.cs" Link="Mod\ToolContract.cs" />
+    <Compile Include="..\StardewMCP\Agent\ToolResult.cs" Link="Mod\ToolResult.cs" />
+    <Compile Include="..\StardewMCP\Agent\ShopRules.cs" Link="Mod\ShopRules.cs" />
+    <Compile Include="..\StardewMCP\Agent\CombatRules.cs" Link="Mod\CombatRules.cs" />
+    <Compile Include="..\StardewMCP\Agent\MineRules.cs" Link="Mod\MineRules.cs" />
     <Compile Include="..\StardewMCP\Agent\LoopDetector.cs" Link="Mod\LoopDetector.cs" />
     <Compile Include="..\StardewMCP\Agent\McpDispatcher.cs" Link="Mod\McpDispatcher.cs" />
     <Compile Include="..\StardewMCP\Agent\Peek.cs" Link="Mod\Peek.cs" />
     <Compile Include="..\StardewMCP\Agent\KnowledgeMath.cs" Link="Mod\KnowledgeMath.cs" />
+    <Compile Include="..\StardewMCP\Agent\FishRules.cs" Link="Mod\FishRules.cs" />
+    <Compile Include="..\StardewMCP\Agent\SourceBook.cs" Link="Mod\SourceBook.cs" />
     <Compile Include="..\StardewMCP\Agent\BobberController.cs" Link="Mod\BobberController.cs" />
     <Compile Include="..\StardewMCP\Agent\WorldText.Format.cs" Link="Mod\WorldText.Format.cs" />
     <Compile Include="..\StardewMCP\Agent\BubbleText.cs" Link="Mod\BubbleText.cs" />
@@ -45,6 +52,7 @@
     <Compile Include="..\StardewMCP\Agent\SightLog.cs" Link="Mod\SightLog.cs" />
     <Compile Include="..\StardewMCP\Agent\StaleMessage.cs" Link="Mod\StaleMessage.cs" />
     <Compile Include="..\StardewMCP\Agent\ApiContract.cs" Link="Mod\ApiContract.cs" />
+    <Compile Include="..\StardewMCP\Agent\Semantic\ToolCatalog.cs" Link="Mod\Semantic\ToolCatalog.cs" />
     <Compile Include="..\StardewMCP\Agent\OriginPolicy.cs" Link="Mod\OriginPolicy.cs" />
     <Compile Include="..\StardewMCP\Agent\GameThread.cs" Link="Mod\GameThread.cs" />
     <Compile Include="..\StardewMCP\Agent\GameSession.cs" Link="Mod\GameSession.cs" />
@@ -53,6 +61,14 @@
     <Compile Include="..\StardewMCP\Agent\Brain\OpenAiProvider.cs" Link="Mod\Brain\OpenAiProvider.cs" />
     <Compile Include="..\StardewMCP\Agent\Brain\GeminiProvider.cs" Link="Mod\Brain\GeminiProvider.cs" />
     <Compile Include="..\StardewMCP\Agent\Brain\Prompts.cs" Link="Mod\Brain\Prompts.cs" />
+    <Compile Include="..\StardewMCP\Agent\GuideTopics.cs" Link="Mod\GuideTopics.cs" />
+    <Compile Include="..\StardewMCP\Agent\MachineMath.cs" Link="Mod\MachineMath.cs" />
+    <Compile Include="..\StardewMCP\Agent\BundlePlan.cs" Link="Mod\BundlePlan.cs" />
+    <Compile Include="..\StardewMCP\Agent\ProgressMath.cs" Link="Mod\ProgressMath.cs" />
+    <Compile Include="..\StardewMCP\Agent\GiftTasteMath.cs" Link="Mod\GiftTasteMath.cs" />
+    <Compile Include="..\StardewMCP\Agent\UpgradeRules.cs" Link="Mod\UpgradeRules.cs" />
+    <Compile Include="..\StardewMCP\Agent\DefenseRules.cs" Link="Mod\DefenseRules.cs" />
+    <Compile Include="..\StardewMCP\Agent\MonsterRules.cs" Link="Mod\MonsterRules.cs" />
   </ItemGroup>
 
 </Project>

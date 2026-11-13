@@ -398,9 +398,9 @@ public static partial class AgentTools
         return doc.RootElement.Clone();
     }
 
-    private static IEnumerator JojaFail(CallContext c, string message)
+    private static IEnumerator JojaInvalidArgs(CallContext c, string action)
     {
-        c.Fail(message);
+        c.InvalidArgs($"Unknown action \"{action}\". Use projects, membership or buy_project.", "projects", "membership", "buy_project");
         yield break;
     }
 
@@ -419,7 +419,7 @@ public static partial class AgentTools
             "projects" or "" => JojaProjects(c),
             "membership" => JojaMembership(a, c),
             "buy_project" => JojaBuyProject(a, c),
-            _ => JojaFail(c, $"Unknown action \"{action}\". Use projects, membership or buy_project.")
+            _ => JojaInvalidArgs(c, action)
         };
     }
 

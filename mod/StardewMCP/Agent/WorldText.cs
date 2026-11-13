@@ -8,6 +8,7 @@ using StardewValley.Buildings;
 using StardewValley.Menus;
 using StardewValley.Objects;
 using StardewValley.TerrainFeatures;
+using StardewValley.Tools;
 using SObject = StardewValley.Object;
 
 namespace StardewMCP.Agent;
@@ -17,7 +18,7 @@ public static partial class WorldText
 {
     public const string Legend =
         "@ you | . walkable | , tillable ground | # blocked | ~ water (refill the can, fish) | * fish bubbles (cast here: bites come faster) | D door/exit/ladder | A action tile (shop counter, etc) | " +
-        "N villager | M monster | H building | b shipping bin | Z your bed | f furniture | O object/machine/chest | W weeds | w twig | S stone | " +
+        "N villager | M monster | H building | b shipping bin | Z your bed | f furniture | O object/machine/chest | W weeds | w twig | S stone or ore/gem node (the list names the kind) | " +
         "L large stump/log/boulder | T tree | t young tree/sapling | s tree stump | Y fruit tree | u bush | g grass | F item to pick up by hand (forage, loose quartz/minerals: harvest it, tools don't break it) or a dropped item | E festival egg (egg hunt) | " +
         "= tilled soil (empty) | c crop needs water | C crop watered | ! crop ready to harvest | x dead crop";
 
@@ -57,7 +58,11 @@ public static partial class WorldText
         var held = p.CurrentItem;
         var owned = Professions.Owned(p);
         if (owned.Length > 0) sb.AppendLine($"Professions: {owned}");
-        sb.AppendLine($"Holding: {(held == null ? "nothing" : $"{held.DisplayName} x{held.Stack}")} (slot {p.CurrentToolIndex})");
+        string heldDamage = held is MeleeWeapon w ? $", damage {w.minDamage.Value}-{w.maxDamage.Value}" : "";
+        sb.AppendLine($"Holding: {(held == null ? "nothing" : $"{held.DisplayName} x{held.Stack}")}{heldDamage} (slot {p.CurrentToolIndex})");
+        int packUsed = p.Items.Count(i => i != null);
+        if (packUsed >= p.MaxItems - 2)
+            sb.AppendLine($"⚠ Pack {packUsed}/{p.MaxItems} slots: use chest(action=stash) before leaving the farm; it finds or crafts a chest and stores the clutter.");
         var fishing = AgentTools.FishingLine();
         if (fishing.Length > 0) sb.AppendLine(fishing);
         var gear = AgentTools.StatusExtras(p);
@@ -132,14 +137,18 @@ public static partial class WorldText
     {
         var p = Game1.player;
         var sb = new StringBuilder();
-        sb.AppendLine($"Money {p.Money}g · inventory ({p.Items.Count(i => i != null)}/{p.MaxItems} slots used):");
+        int used = p.Items.Count(i => i != null);
+        sb.AppendLine($"Money {p.Money}g · inventory ({used}/{p.MaxItems} slots used):");
+        if (used >= p.MaxItems - 2)
+            sb.AppendLine("⚠ Pack nearly full: chest(action=stash) finds or crafts a chest and stores the clutter before you head out.");
         for (int i = 0; i < p.Items.Count; i++)
         {
             var it = p.Items[i];
             if (it == null) continue;
             var extra = it is SObject o && o.Edibility > -300 ? $", edible +{o.staminaRecoveredOnConsumption()} energy" : "";
             var quality = it is not Tool && it.Quality > 0 ? $", {AgentTools.QualityName(it.Quality)}" : "";
-            sb.AppendLine($"  slot {i}: {it.DisplayName} x{it.Stack} [{(it is Tool ? "tool" : it.getCategoryName())}{quality}{extra}{AgentTools.RodNote(it)}]");
+            var damage = it is MeleeWeapon w ? $", damage {w.minDamage.Value}-{w.maxDamage.Value}" : "";
+            sb.AppendLine($"  slot {i}: {it.DisplayName} x{it.Stack} [{(it is Tool ? "tool" : it.getCategoryName())}{quality}{extra}{damage}{AgentTools.RodNote(it)}]");
         }
         return (sb.ToString().TrimEnd() + "\n" + AgentTools.InventoryExtras(p)).TrimEnd();
     }
@@ -153,6 +162,10 @@ public static partial class WorldText
 
         if (p.TilePoint == pt) return ('@', null);
         if (AgentTools.EggAt(loc, x, y)) return ('E', "Egg (interact to pick it up, or festival(eggs))");
+        // Pierre's sign is tile index 620 on the Town Buildings layer, answered by Town.checkAction, not an Action property.
+        if (loc is StardewValley.Locations.Town &&
+            loc.getTileIndexAt(new xTile.Dimensions.Location(x, y), "Buildings", "Town") == 620)
+            return ('A', "Sign: " + ActionTiles.SeedShopSign());
 
         foreach (var npc in loc.characters.Concat(AgentTools.FestivalActors())) // festival villagers are event actors
         {
@@ -202,7 +215,7 @@ public static partial class WorldText
         {
             if (obj.IsWeeds()) return ('W', "Weeds");
             if (obj.IsTwig()) return ('w', "Twig");
-            if (obj.IsBreakableStone()) return ('S', "Stone");
+            if (obj.IsBreakableStone()) return ('S', StoneLabel(obj.ItemId));
             if (IsLoose(obj)) return ('F', obj.DisplayName);
             if (obj is Chest chest)
             {
@@ -210,7 +223,7 @@ public static partial class WorldText
                 if (chest.playerChest.Value)
                     return ('O', $"Chest ({chest.Items.Count(i => i != null)} items{OwnerNote(Ownership.OwnerOf(chest), ", owner ")} — interact, then menu take/put)");
             }
-            var held = obj.heldObject.Value != null ? $" (holding {obj.heldObject.Value.DisplayName}{(obj.readyForHarvest.Value ? ", READY" : "")})" : "";
+            var held = obj.heldObject.Value != null ? $" (holding {obj.heldObject.Value.DisplayName}{HeldState(obj)})" : "";
             return ('O', obj.DisplayName + held + (obj.GetMachineData() != null ? OwnerNote(Ownership.OwnerOf(obj), " (owner ", ")") : ""));
         }
 
@@ -263,6 +276,14 @@ public static partial class WorldText
         return ('.', null);
     }
 
+    /// <summary>", READY" or ", 2h 10m left" after a machine's held item; "" when the time is unknown.</summary>
+    private static string HeldState(SObject obj)
+    {
+        if (obj.readyForHarvest.Value) return ", READY";
+        var left = TimeLeft(obj.MinutesUntilReady);
+        return left.Length > 0 ? ", " + left : "";
+    }
+
     private static string OwnerNote(string? owner, string before, string after = "") => owner == null ? "" : before + OwnerName(owner) + after;
 
     // ownership is stored by seat id; the AIs only ever see farmer names (or "you")
@@ -301,7 +322,10 @@ public static partial class WorldText
             return changes;
 
         var cells = new Dictionary<(int x, int y), (char sym, string? label)>();
+        // Grouped by the label without a machine's time left, so machines started minutes apart share a line.
         var labels = new Dictionary<string, List<(int x, int y)>>();
+        var fullLabel = new Dictionary<string, string>();
+        var timeLeft = new Dictionary<(int x, int y), string>();
         var sb = new StringBuilder();
         var floor = loc is StardewValley.Locations.MineShaft mine ? $" · {MineFloorName(mine.mineLevel)}" : "";
         sb.AppendLine($"Map {loc.Name} ({w}x{h}){floor}. You @ ({px},{py}) facing {DirName(p.FacingDirection)}. Showing x {x0}-{x1}, y {y0}-{y1}.");
@@ -327,9 +351,11 @@ public static partial class WorldText
                 sb.Append(sym);
                 if (label != null && sym != '@')
                 {
-                    var key = $"{sym} {label}";
-                    if (!labels.TryGetValue(key, out var list)) labels[key] = list = new();
+                    var (stable, left) = SplitTimeLeft(label);
+                    var key = $"{sym} {stable}";
+                    if (!labels.TryGetValue(key, out var list)) { labels[key] = list = new(); fullLabel[key] = $"{sym} {label}"; }
                     list.Add((x, y));
+                    timeLeft[(x, y)] = left;
                 }
             }
             sb.AppendLine();
@@ -339,8 +365,11 @@ public static partial class WorldText
         foreach (var kv in labels.Where(kv => Observation.Wants(kinds, kv.Key)).OrderBy(kv => kv.Value.Min(t => Math.Abs(t.x - px) + Math.Abs(t.y - py))))
         {
             var pts = kv.Value.OrderBy(t => Math.Abs(t.x - px) + Math.Abs(t.y - py)).ToList();
-            var shown = string.Join(" ", pts.Take(10).Select(t => $"({t.x},{t.y})"));
-            sb.AppendLine($"  {kv.Key} x{pts.Count}: {shown}{(pts.Count > 10 ? " ..." : "")}");
+            // One time left for the whole group goes into the heading; different ones go after each tile.
+            bool sameTime = pts.Select(t => timeLeft[t]).Distinct().Count() == 1;
+            var shown = string.Join(sameTime ? " " : ", ", pts.Take(10).Select(t =>
+                sameTime || timeLeft[t].Length == 0 ? $"({t.x},{t.y})" : $"({t.x},{t.y}) {timeLeft[t]}"));
+            sb.AppendLine($"  {(sameTime ? fullLabel[kv.Key] : kv.Key)} x{pts.Count}: {shown}{(pts.Count > 10 ? " ..." : "")}");
         }
 
         var inView = Perception.InViewText(radius);

@@ -28,9 +28,11 @@ public class ModEntry : Mod
 
         _log = new AgentLog(logDir, Monitor);
         AgentTools.Config = _config;
+        Knowledge.Init(_config); // fixed until restart, like the tool list and the prompt
         Players.Init(helper, Monitor, _config, _log);
         DayStats.Init(_log);
         ChestLedger.Init(_log);
+        Briefing.Register(45, "tv", AgentTools.TvBriefingLine); // a TV in the morning room is easy to walk past
         WorldClock.Init(_config);
         PassOut.Init(_log);
         Perception.Init();
@@ -55,6 +57,7 @@ public class ModEntry : Mod
         GameSession.OnEnd("pass-out", PassOut.OnReturnedToTitle);
         GameSession.OnEnd("world progress", WorldProgress.Reset);
         GameSession.OnEnd("villagers", NpcInfo.Reset);
+        GameSession.OnEnd("self-defense", SelfDefense.Reset);
 
         helper.Events.GameLoop.GameLaunched += (_, _) =>
         {
@@ -135,6 +138,10 @@ public class ModEntry : Mod
         SplitScreen.ScreenTick();
 
         seat.Runtime.Tick();
+        // A monster that reaches a farmer between its actions is answered by the farmer itself (no pause):
+        // a slow model used to be beaten up while it thought (see SelfDefense).
+        if (Context.IsWorldReady)
+            SelfDefense.Tick(seat, _config);
         if (Context.IsWorldReady)
         {
             SleepWaitWatch.Tick(seat);

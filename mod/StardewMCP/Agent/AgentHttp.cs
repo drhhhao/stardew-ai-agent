@@ -58,7 +58,10 @@ public class AgentHttp
         _assetDir = assetDir;
         _modVersion = modVersion;
         _tools = AgentTools.All().ToDictionary(t => t.Name);
-        _mcp = new McpDispatcher(_tools, () => _config.SplitScreen, modVersion);
+        // The guide sentence follows the guide tool, which is registered at startup only when GuideKnowledge is on.
+        // Self-defense is a live config value; the instructions are built on every MCP initialize.
+        _mcp = new McpDispatcher(_tools, () => _config.SplitScreen, modVersion, () => _tools.ContainsKey("guide"),
+            () => _config.SelfDefense);
         foreach (var problem in ToolContract.Check(_tools.Values))
             _monitor.Log("Tool contract: " + problem, LogLevel.Warn);
     }

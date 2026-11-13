@@ -9,6 +9,10 @@ using Microsoft.Xna.Framework;
 using StardewValley;
 using StardewValley.Locations;
 using StardewValley.Menus;
+using StardewValley.Objects;
+using StardewValley.Quests;
+using StardewValley.SpecialOrders;
+using StardewValley.SpecialOrders.Objectives;
 using SObject = StardewValley.Object;
 
 namespace StardewMCP.Agent;
@@ -146,26 +150,6 @@ internal static class LateBound
     }
 }
 
-/// <summary>What one bundle ingredient asks for. <see cref="Id"/> is the bundle data's own id: -1 gold, below -1 an item category, else an object id.</summary>
-internal sealed record BundleNeed(int Slot, string Id, int Count, int Quality, bool Done);
-
-/// <summary>One bundle, parsed from <c>BundleData</c> and the donated flags in <c>Bundles</c>.</summary>
-internal sealed class BundleInfo
-{
-    public int Index;
-    public string Room = "";
-    /// <summary>Position of <see cref="Room"/> in <see cref="BundleReader.Rooms"/>, or -1 for a room this mod does not drive (the Abandoned Joja Mart).</summary>
-    public int Area = -1;
-    public string Name = "";
-    public string Reward = "";
-    /// <summary>How many of <see cref="Needs"/> must be filled (some bundles take 4 of 6).</summary>
-    public int Required;
-    public List<BundleNeed> Needs = new();
-
-    public int Filled => Needs.Count(n => n.Done);
-    public bool Complete => Filled >= Required;
-}
-
 /// <summary>
 /// Reads the Community Center bundles from the world state and describes them. Shared with the Joja alternative (#26),
 /// which closes the same bundles: <see cref="ClosedReason"/> tells the two routes apart.
@@ -173,7 +157,7 @@ internal sealed class BundleInfo
 internal static class BundleReader
 {
     /// <summary>The six rooms in the order the game numbers their areas (0-5).</summary>
-    public static readonly string[] Rooms = { "Pantry", "Crafts Room", "Fish Tank", "Boiler Room", "Vault", "Bulletin Board" };
+    public static string[] Rooms => BundlePlan.Rooms;
 
     private static readonly Dictionary<int, string> Categories = new()
     {
@@ -204,35 +188,10 @@ internal static class BundleReader
     /// <summary>Every bundle, rooms in game order. Empty when the world has no bundle data.</summary>
     public static List<BundleInfo> Read()
     {
-        var world = Game1.netWorldState.Value;
         var list = new List<BundleInfo>();
-        foreach (var kv in world.BundleData)
-        {
-            var keyParts = kv.Key.Split('/');
-            if (keyParts.Length < 2 || !int.TryParse(keyParts[1], out var index)) continue;
-            var f = kv.Value.Split('/');
-            if (f.Length < 3) continue;
-
-            var info = new BundleInfo
-            {
-                Index = index,
-                Room = keyParts[0],
-                Area = Array.IndexOf(Rooms, keyParts[0]),
-                Name = f[0],
-                Reward = f[1]
-            };
-            var flags = Flags(index);
-            var t = f[2].Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            for (int i = 0; i + 2 < t.Length; i += 3)
-            {
-                int slot = i / 3;
-                int.TryParse(t[i + 1], out var count);
-                int.TryParse(t[i + 2], out var quality);
-                info.Needs.Add(new BundleNeed(slot, t[i], Math.Max(1, count), quality, slot < flags.Length && flags[slot]));
-            }
-            info.Required = f.Length > 4 && int.TryParse(f[4], out var req) && req > 0 ? Math.Min(req, info.Needs.Count) : info.Needs.Count;
-            list.Add(info);
-        }
+        foreach (var kv in Game1.netWorldState.Value.BundleData)
+            if (BundlePlan.Parse(kv.Key, kv.Value, Flags, id => ItemRegistry.QualifyItemId(id) ?? "(O)" + id) is { } info)
+                list.Add(info);
         return list.OrderBy(b => b.Area < 0 ? 99 : b.Area).ThenBy(b => b.Index).ToList();
     }
 
@@ -241,13 +200,7 @@ internal static class BundleReader
         Game1.netWorldState.Value.Bundles.TryGetValue(index, out var f) && f != null ? f : Array.Empty<bool>();
 
     /// <summary>True when this item can fill the ingredient (item or category, quality at least the asked one). The stack size is checked separately.</summary>
-    public static bool Fits(Item item, BundleNeed need)
-    {
-        if (need.Done || need.Id == "-1" || item.Quality < need.Quality) return false;
-        if (need.Id.StartsWith("(")) return item.QualifiedItemId == need.Id;
-        if (int.TryParse(need.Id, out var cat) && cat < -1) return item.Category == cat;
-        return item.QualifiedItemId == "(O)" + need.Id;
-    }
+    public static bool Fits(Item item, BundleNeed need) => BundlePlan.Fits(need, item.QualifiedItemId, item.Category, item.Quality);
 
     public static bool BundleMatches(BundleInfo b, string want)
     {
@@ -263,7 +216,7 @@ internal static class BundleReader
     {
         if (id == "-1") return "Gold";
         if (int.TryParse(id, out var n) && n < -1) return Categories.TryGetValue(n, out var cat) ? cat : $"category {n}";
-        return ItemRegistry.GetData(id.StartsWith("(") ? id : "(O)" + id)?.DisplayName ?? id;
+        return ItemRegistry.GetData(ItemRegistry.QualifyItemId(id) ?? "(O)" + id)?.DisplayName ?? id;
     }
 
     public static string Describe(BundleNeed n)
@@ -284,40 +237,82 @@ internal static class BundleReader
         return count + (name ?? reward);
     }
 
-    /// <summary>"(you have it)" when one inventory stack covers the ingredient, "(you hold 3 of 5)" when it is short, else "".</summary>
-    private static string Carry(Farmer who, BundleNeed n)
+    /// <summary>What finishing a room gives: the Joja project of the same room, the Bulletin Board's friendship, the Joja Mart's theater; null when unknown.</summary>
+    public static string? RoomUnlock(string room) => room switch
     {
-        if (n.Id == "-1") return who.Money >= n.Count ? " (you can pay it)" : "";
-        int best = who.Items.Where(i => i != null && Fits(i, n)).Select(i => i.Stack).DefaultIfEmpty(0).Max();
-        if (best >= n.Count) return " (you have it)";
-        return best > 0 ? $" (you hold {best} of {n.Count})" : "";
+        "Bulletin Board" => "+2 hearts with every villager you can't marry",
+        "Abandoned Joja Mart" => "the movie theater",
+        _ => JojaRoute.Projects.FirstOrDefault(p => p.Room == room)?.Gives
+    };
+
+    /// <summary>Bundle needs may be shown: the Community Center is open, or GuideKnowledge previews it. Never on the Joja route.</summary>
+    public static bool NeedsVisible(Farmer who) => !IsJoja(who) && (ClosedReason(who) == null || Knowledge.Omniscient);
+
+    /// <summary>An unfinished bundle whose slots count as needs: the six rooms, and the Joja Mart's Missing Bundle once the rooms are done.</summary>
+    public static bool Wanted(BundleInfo b, Farmer who) => !b.Complete && (b.Area >= 0 || HasMail(who, "ccIsComplete"));
+
+    /// <summary>Open slots of the wanted bundles, gold left out.</summary>
+    public static List<(BundleInfo bundle, BundleNeed need)> OpenItemSlots(IEnumerable<BundleInfo> all, Farmer who) =>
+        all.Where(b => Wanted(b, who)).SelectMany(b => b.Open.Where(n => !n.IsGold).Select(n => (b, n))).ToList();
+
+    /// <summary>"have 1 pack + 3 Farm chest (64,15)" for an item slot, "you can pay it" / "you have 900g" for gold.</summary>
+    private static (string text, bool enough) Have(Farmer who, BundleNeed n, List<(Item item, string where)> stored)
+    {
+        if (n.IsGold) return who.Money >= n.Count ? ("you can pay it", true) : ($"you have {who.Money}g", false);
+        int pack = who.Items.Where(i => i != null && Fits(i, n)).Sum(i => i.Stack);
+        var places = stored.Where(s => Fits(s.item, n)).GroupBy(s => s.where).Select(g => (g.Key, g.Sum(s => s.item.Stack))).ToList();
+        return (BundlePlan.HaveText(n.Count, pack, places), pack + places.Sum(p => p.Item2) >= n.Count);
     }
 
-    /// <summary>The text of the bundles tool: rooms, bundles, what is donated (and by whom, when this mod saw it) and what is missing.</summary>
-    public static string Report(IReadOnlyList<BundleInfo> all, Farmer who, string? room)
+    /// <summary>The first source lines of the item and, when all of them are seasonal, how long its season lasts; "" for gold and categories.</summary>
+    private static string Sources(BundleNeed n)
+    {
+        if (n.ItemId == null) return "";
+        var all = KnowledgeSources.For(n.ItemId);
+        if (all.Count == 0) return "";
+        var text = " | " + string.Join("; ", all.Take(2));
+        var season = BundlePlan.SeasonNote(all, Game1.currentSeason, Game1.dayOfMonth);
+        return season.Length > 0 ? text + " | " + season : text;
+    }
+
+    /// <summary>
+    /// The text of the bundles tool: rooms (with what each unlocks), bundles, what is donated (and by whom, when this mod saw it)
+    /// and each missing slot with what you have of it (pack and chests) and where it comes from.
+    /// </summary>
+    public static string Report(IReadOnlyList<BundleInfo> all, Farmer who, string? room, bool missingOnly = false, bool preview = false)
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"Community Center: {all.Count(b => b.Complete)}/{all.Count} bundles complete. Donate with donate_bundle(item) while standing inside the Community Center.");
-        if (!HasMail(who, "canReadJunimoText"))
+        if (preview) sb.AppendLine("(Community Center not open yet: preview)");
+        sb.AppendLine($"Community Center: {all.Count(b => b.Complete)}/{all.Count} bundles complete." +
+                      (preview ? "" : " Donate with donate_bundle(item) while standing inside the Community Center."));
+        if (!preview && !HasMail(who, "canReadJunimoText"))
             sb.AppendLine("(You can't read Junimo script yet: the Wizard teaches it. The data below is exact anyway.)");
+        var stored = ChestLedger.StoredItems();
         foreach (var g in all.GroupBy(b => b.Room))
         {
             if (room != null && !RoomMatches(g.Key, room)) continue;
-            sb.AppendLine($"== {g.Key}: {g.Count(b => b.Complete)}/{g.Count()} bundles complete");
+            bool roomDone = g.All(b => b.Complete);
+            if (missingOnly && roomDone) continue;
+            var unlock = RoomUnlock(g.Key) is { } u ? (roomDone ? $" (gave {u})" : $" → unlocks {u}") : "";
+            sb.AppendLine($"== {g.Key}: {g.Count(b => b.Complete)}/{g.Count()} bundles complete{unlock}");
             foreach (var b in g)
             {
                 if (b.Complete)
                 {
-                    sb.AppendLine($"  [{b.Index}] {b.Name} COMPLETE → {RewardText(b.Reward)}");
+                    if (!missingOnly) sb.AppendLine($"  [{b.Index}] {b.Name} COMPLETE → {RewardText(b.Reward)}");
                     continue;
                 }
                 var done = b.Needs.Where(n => n.Done)
                     .Select(n => Describe(n) + (BundleLedger.Who(b.Index, n.Slot) is { } w ? $" (by {w})" : ""));
-                var open = b.Needs.Where(n => !n.Done).ToList();
-                int remaining = b.Required - b.Filled;
-                var lead = remaining < open.Count ? $"needs {remaining} more of: " : "needs: ";
-                var doneText = done.Any() ? " | done: " + string.Join(", ", done) : "";
-                sb.AppendLine($"  [{b.Index}] {b.Name} {b.Filled}/{b.Required} → {RewardText(b.Reward)}{doneText} | {lead}{string.Join(", ", open.Select(n => Describe(n) + Carry(who, n)))}");
+                var open = b.Open.ToList();
+                var lead = b.Remaining < open.Count ? $"needs {b.Remaining} more of:" : "needs:";
+                var doneText = !missingOnly && done.Any() ? " | done: " + string.Join(", ", done) : "";
+                sb.AppendLine($"  [{b.Index}] {b.Name} {b.Filled}/{b.Required} → {RewardText(b.Reward)}{doneText} | {lead}");
+                foreach (var n in open)
+                {
+                    var (have, enough) = Have(who, n, stored);
+                    sb.AppendLine($"    - {Describe(n)}: {have}{(enough ? "" : Sources(n))}");
+                }
             }
         }
         return sb.ToString().TrimEnd();
@@ -351,10 +346,19 @@ public static partial class AgentTools
         new()
         {
             Name = "bundles",
-            Description = "Community Center bundles, room by room: what each bundle needs (item, quality, count), what is already donated and by whom, the reward, " +
-                          "and which of your inventory items fit a missing slot. Needs the Community Center to be open (the Wizard teaches you to read the notes). " +
+            Description = "Community Center bundles, room by room: what each room unlocks, what each bundle needs (item, quality, count), what is already donated and by whom, " +
+                          "the reward, and for each missing item how many you have (pack and every chest and fridge on the farm) and where it comes from. " +
+                          (Knowledge.Omniscient
+                              ? "Before the Community Center opens it shows a preview of what the bundles will need. "
+                              : "Needs the Community Center to be open (the Wizard teaches you to read the notes). ") +
+                          "action keep: ship or keep? for every item in your pack, whether a bundle, the Museum or a quest still wants it and its best machine, ending with what is safe to ship. " +
                           "Game time stays frozen.",
-            Schema = Obj(new { room = Str("Optional: only this room (Pantry, Crafts Room, Fish Tank, Boiler Room, Vault, Bulletin Board)") }),
+            Schema = Obj(new
+            {
+                room = Str("Optional: only this room (Pantry, Crafts Room, Fish Tank, Boiler Room, Vault, Bulletin Board)"),
+                missing_only = new { type = "boolean", description = "Only unfinished bundles and their missing items (default false)" },
+                action = new { type = "string", @enum = new[] { "list", "keep" }, description = "list (default): the bundles; keep: ship-or-keep check of your pack" }
+            }),
             Instant = true,
             Run = (a, c) => CommunityGuard(BundlesRun(a, c), c)
         },
@@ -386,6 +390,7 @@ public static partial class AgentTools
                 reason = Str(ReasonDesc)
             }),
             InstantFor = a => S(a, "action").Trim().ToLowerInvariant() is "" or "list",
+            Legacy = true,
             Run = (a, c) => CommunityGuard(MuseumRun(a, c), c)
         }
     };
@@ -414,17 +419,132 @@ public static partial class AgentTools
 
     private static IEnumerator BundlesRun(JsonElement a, CallContext c)
     {
-        var closed = BundleReader.ClosedReason(P);
-        if (closed != null) { c.Fail(closed); yield break; }
-        var all = BundleReader.Read();
-        if (all.Count == 0) { c.Fail("The game has no bundle data yet."); yield break; }
-        var room = S(a, "room").Trim();
-        if (room.Length > 0 && !all.Any(b => BundleReader.RoomMatches(b.Room, room)))
+        var action = S(a, "action").Trim().ToLowerInvariant();
+        if (action is not ("" or "list" or "keep")) { c.InvalidArgs($"Unknown action \"{action}\". Use list or keep.", "list", "keep"); yield break; }
+        try
         {
-            c.Fail($"No room \"{room}\". Rooms: {string.Join(", ", all.Select(b => b.Room).Distinct())}");
-            yield break;
+            if (action == "keep")
+            {
+                c.Result = KeepText(P);
+                yield break;
+            }
+            var closed = BundleReader.ClosedReason(P);
+            bool preview = closed != null;
+            if (preview && !BundleReader.NeedsVisible(P)) { c.Fail(closed!); yield break; }
+            var all = BundleReader.Read();
+            if (all.Count == 0) { c.Fail("The game has no bundle data yet."); yield break; }
+            var room = S(a, "room").Trim();
+            if (room.Length > 0 && !all.Any(b => BundleReader.RoomMatches(b.Room, room)))
+            {
+                c.Fail($"No room \"{room}\". Rooms: {string.Join(", ", all.Select(b => b.Room).Distinct())}");
+                yield break;
+            }
+            c.Result = BundleReader.Report(all, P, room.Length > 0 ? room : null, Observation.Flag(a, "missing_only"), preview);
         }
-        c.Result = BundleReader.Report(all, P, room.Length > 0 ? room : null);
+        catch (Exception ex) when (ex is not LateBoundException)
+        {
+            c.Fail($"bundles could not read the game data ({ex.GetType().Name}: {ex.Message}). Tell the player; the game data may differ from what the mod expects.");
+        }
+    }
+
+    /// <summary>
+    /// bundles(action=keep): for every object in the pack, the reasons to keep it (open bundle slots the chests do not cover,
+    /// a Museum piece not donated yet, an item quest or special order) and its best machine, then what is safe to ship.
+    /// </summary>
+    private static string KeepText(Farmer who)
+    {
+        var header = new List<string> { "Ship or keep? (your pack; your chests fill bundle slots first)" };
+        var slots = new List<(BundleInfo bundle, BundleNeed need)>();
+        if (BundleReader.IsJoja(who)) header.Add("(Joja route: no bundle needs.)");
+        else if (!BundleReader.NeedsVisible(who)) header.Add("(Community Center not open yet: bundle needs unknown.)");
+        else
+        {
+            if (BundleReader.ClosedReason(who) != null) header.Add("(Community Center not open yet: bundle needs are a preview)");
+            slots = BundleReader.OpenItemSlots(BundleReader.Read(), who);
+        }
+
+        var pack = who.Items.Where(i => i is SObject { bigCraftable.Value: false } and not Furniture).ToList();
+        if (pack.Count == 0) return BundlePlan.KeepReport(header, Array.Empty<KeepRow>());
+
+        // Bundle slots take chest stacks first, so the pack keeps only what the chests do not cover.
+        var stored = slots.Count == 0
+            ? new List<Item>()
+            : ChestLedger.StoredItems().Select(s => s.item).Where(i => slots.Any(x => BundleReader.Fits(i, x.need))).ToList();
+        var items = stored.Concat(pack).ToList();
+        var stacks = items.Select((it, i) => new KeepStack(it.Quality, it.Stack, i >= stored.Count)).ToList();
+        // A bundle that takes N of M holds items back only for the N slots it still needs, the ones the chests cover first.
+        var open = slots;
+        slots = BundlePlan.PickSlots(open, stacks, (s, n) => BundleReader.Fits(items[s], open[n].need)).Select(i => open[i]).ToList();
+        var needs = slots.Select(x => x.need).ToList();
+        var alloc = BundlePlan.Allocate(needs, stacks, (s, n) => BundleReader.Fits(items[s], needs[n]));
+
+        var quests = QuestWants(who);
+        var questLeft = quests.ToDictionary(q => q.key, q => q.count);
+        var museumSeen = new HashSet<string>();
+        var rows = new List<KeepRow>();
+        for (int p = 0; p < pack.Count; p++)
+        {
+            var it = pack[p];
+            var tags = new List<string>();
+            int keep = 0;
+            foreach (var (n, amount) in alloc[stored.Count + p])
+            {
+                var (b, need) = slots[n];
+                var quality = need.Quality > 0 ? ", " + BundlePlan.QualityWords(need.Quality) : "";
+                tags.Add($"bundle {b.Name} ({b.Room}) {amount}{(amount < need.Count ? $" of {need.Count}" : "")}{quality}");
+                keep += amount;
+            }
+            if (museumSeen.Add(it.QualifiedItemId) && LibraryMuseum.IsItemSuitableForDonation(it.QualifiedItemId))
+            {
+                tags.Add("museum-new");
+                keep += 1;
+            }
+            foreach (var q in quests.Where(q => q.wants(it)))
+            {
+                int take = Math.Min(questLeft[q.key], Math.Max(0, it.Stack - keep));
+                if (take <= 0) continue;
+                questLeft[q.key] -= take;
+                tags.Add($"{q.name} {take}");
+                keep += take;
+            }
+            var route = MachineTools.BestOutputs(it.QualifiedItemId, 1).FirstOrDefault();
+            var label = it.Quality == 0 ? it.DisplayName : $"{it.DisplayName} ({QualityName(it.Quality)})";
+            rows.Add(new KeepRow(label, it.Stack, tags, keep, it.canBeShipped(), route, BundlePlan.IsSupply(it.Category, (it as SObject)?.Type)));
+        }
+        return BundlePlan.KeepReport(header, rows);
+    }
+
+    /// <summary>
+    /// What the open item quests (ItemDeliveryQuest) and special orders (deliver and donate objectives) still want: a key, a
+    /// short name ("quest Robin's Request", "order Gus's Crop Order"), the count still missing and an item test.
+    /// </summary>
+    private static List<(object key, string name, int count, Func<Item, bool> wants)> QuestWants(Farmer who)
+    {
+        var list = new List<(object key, string name, int count, Func<Item, bool> wants)>();
+        foreach (var q in who.questLog)
+            if (q is ItemDeliveryQuest d && !d.completed.Value && !string.IsNullOrEmpty(d.ItemId.Value))
+                list.Add((d, $"quest {d.GetName()}", Math.Max(1, d.number.Value), i => i.QualifiedItemId == d.ItemId.Value));
+        foreach (var order in who.team.specialOrders)
+        {
+            if (order.questState.Value != SpecialOrderStatus.InProgress) continue;
+            foreach (var o in order.objectives)
+            {
+                if (o.IsComplete()) continue;
+                int left = Math.Max(1, o.GetMaxCount() - o.GetCount());
+                if (o is DeliverObjective deliver && deliver.acceptableContextTagSets.Count > 0)
+                    list.Add((o, $"order {order.GetName()}", left, i => MatchesTagSets(deliver.acceptableContextTagSets, i)));
+                else if (o is DonateObjective donate)
+                    list.Add((o, $"order {order.GetName()}", left, donate.IsValidItem));
+            }
+        }
+        return list;
+    }
+
+    /// <summary>DeliverObjective's item test: some tag set whose every comma part has a matching tag ("a/b" = either).</summary>
+    private static bool MatchesTagSets(IEnumerable<string> sets, Item item)
+    {
+        var tags = item.GetContextTags();
+        return sets.Any(set => set.Split(',').All(part => ItemContextTagManager.DoAnyTagsMatch(part.Split('/'), tags)));
     }
 
     private sealed record DonationPick(BundleInfo Bundle, BundleNeed Need, int InvSlot);
@@ -736,7 +856,7 @@ public static partial class AgentTools
                 yield return MuseumRewards(c);
                 break;
             default:
-                c.Fail($"Unknown action \"{action}\". Use list, donate or rewards.");
+                c.InvalidArgs($"Unknown action \"{action}\". Use list, donate or rewards.", "list", "donate", "rewards");
                 break;
         }
     }
@@ -775,9 +895,9 @@ public static partial class AgentTools
         }
         sb.Append(rows.Count == 0
             ? "The Museum accepts none of the items you carry. It takes one of each artifact and mineral that is not on display yet."
-            : $"The Museum accepts: {string.Join(", ", rows)}. It keeps one of each; donate with museum(action=donate, item=...) inside the Museum (travel_to ArchaeologyHouse).");
+            : $"The Museum accepts: {string.Join(", ", rows)}. It keeps one of each; donate with donate_museum(item=...) inside the Museum (travel_to ArchaeologyHouse).");
         int rewards = MuseumRewardCount(museum);
-        if (rewards > 0) sb.Append($"\nGunther has {rewards} reward(s) waiting for you: museum(action=rewards) inside the Museum.");
+        if (rewards > 0) sb.Append($"\nGunther has {rewards} reward(s) waiting for you: claim_museum_rewards() inside the Museum.");
         return sb.ToString();
     }
 
@@ -801,7 +921,7 @@ public static partial class AgentTools
         {
             foreach (var carried in P.Items)
                 if (carried is SObject && MuseumAccepts(museum, carried)) items.Add(carried);
-            if (items.Count == 0) { c.Fail("The Museum accepts none of the items you carry (museum action=list)."); yield break; }
+            if (items.Count == 0) { c.Fail("The Museum accepts none of the items you carry (list_museum_donations)."); yield break; }
         }
         else
         {
@@ -842,7 +962,7 @@ public static partial class AgentTools
         var text = $"Donated to the Museum: {string.Join(", ", donated)}.";
         if (stopped != null) text += " " + stopped;
         int rewardsAfter = MuseumRewardCount(museum);
-        if (rewardsAfter > 0 && rewardsAfter > rewardsBefore) text += $" Gunther has {rewardsAfter} reward(s) for you now: museum(action=rewards).";
+        if (rewardsAfter > 0 && rewardsAfter > rewardsBefore) text += $" Gunther has {rewardsAfter} reward(s) for you now: claim_museum_rewards().";
         c.Result = text;
     }
 
@@ -878,7 +998,7 @@ public static partial class AgentTools
         if (Game1.activeClickableMenu != null || Game1.eventUp) { c.Fail("Close the open menu or finish the scene first."); yield break; }
         if (MuseumRewardCount(museum) == 0)
         {
-            c.Fail("Gunther has no reward for you yet. Rewards come at donation milestones; museum(action=list) shows what you can donate.");
+            c.Fail("Gunther has no reward for you yet. Rewards come at donation milestones; list_museum_donations shows what you can donate.");
             yield break;
         }
 

@@ -72,14 +72,14 @@ public static class BobberMath
     }
 
     /// <summary>
-    /// Whether to chase the treasure chest instead of the fish: only after it has appeared and while the catch
-    /// bar is comfortably full, with some hysteresis so the choice does not flip every tick.
+    /// Whether a newly appeared treasure chest is worth switching to. The driver asks this once per cast: a chest far
+    /// from the fish used to make the bar jump back and forth between the two goals and never finish either. Only a
+    /// chest close enough to cover with the current bar, while the catch is already well advanced, is chosen.
     /// </summary>
-    public static bool ChaseTreasure(bool hasTreasure, float appearTimer, bool caught, float progress, bool wasChasing)
+    public static bool TreasureWorthChasing(float progress, float fishPos, float treasurePos, float barHeight)
     {
-        if (!hasTreasure || caught || appearTimer > 0f)
-            return false;
-        return progress > (wasChasing ? TreasureStopProgress : TreasureStartProgress);
+        float gap = Math.Abs(treasurePos - fishPos);
+        return progress >= TreasureStartProgress && gap <= Math.Max(64f, barHeight * 0.75f);
     }
 }
 

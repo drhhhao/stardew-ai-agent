@@ -39,13 +39,35 @@ public static class Prompts
     public sealed record SystemInputs(
         string Model, string PlayerName, string Seat, string Language, bool FreezeWhileThinking,
         IReadOnlyList<(string Seat, string Name, string Kind)> Others,
-        string Self, string People, string Lessons, string Plan, string Notes);
+        string Self, string People, string Lessons, string Plan, string Notes,
+        bool Guide = false, bool GiftTastes = false, bool SelfDefense = false);
+
+    /// <summary>The first "Useful facts" bullet when the strategy guide is on (GuideKnowledge).</summary>
+    public const string GuideFact =
+        "- **Strategy guide.** `guide()` gives the year roadmap and topic list, and `guide(topic)` gives one topic (spring, money, mines, fishing, community_center, festivals...). " +
+        "Read the overview each new season and the topic before any big choice: a purchase over 1,000g, a profession, a festival, the first trip to a new place. " +
+        "Exact numbers come from `crops`, `item_info`, `fish_info`, `machines`, `bundles` and `progress`, not from memory.";
+
+    /// <summary>How the AI learns gift tastes: from the game data (GuideKnowledge / RevealGiftTastes) or from reactions.</summary>
+    public const string GiftRuleKnown = "`villagers(name)` lists what they love and hate; `villagers(item=X)` says who loves X.";
+    public const string GiftRuleLearn = "Nobody tells you the tastes: learn them from reactions and write them in your notes.";
 
     public static string System(string template, SystemInputs i)
     {
         string timeMode = i.FreezeWhileThinking
             ? "**Game time is frozen while you think** and only moves while an action runs. Take the time to plan well, but each action costs game time."
             : "**Game time keeps running while you think**, so decide quickly and prefer batch tools (`water_all`, `harvest_all`, `clear_area`) over many small calls. Standing still costs daylight.";
+
+        // The world keeps moving while the AI thinks (the clock may be frozen, the monsters never are), so the farmer
+        // answers a monster that reaches it and eats when hurt. Say so: otherwise sudden health drops and swings it
+        // did not ask for look like bugs to it.
+        if (i.SelfDefense)
+            timeMode += "\n- **You defend yourself while thinking.** Game time and monsters are separate: a monster that reaches " +
+                        "you between your calls is hit by your own best weapon, and if your health is low you eat your best " +
+                        "health food by yourself. Nothing is paused for that. So never stand next to monsters while you plan, " +
+                        "never rely on it to win a fight (it never chases; only at 25% health with no food left does it step a " +
+                        "few tiles away), and check Health in `status` when you come back: a fight you started with `fight` may " +
+                        "have gone on without you.";
 
         string others;
         if (i.Others.Count == 0)
@@ -58,7 +80,13 @@ public static class Prompts
             others = sb.ToString();
         }
 
+        // {GUIDE} sits on a line of its own; when the guide is off the whole line goes, not just the word.
+        if (!i.Guide)
+            template = template.Replace("{GUIDE}\r\n", "").Replace("{GUIDE}\n", "");
+
         return template
+            .Replace("{GUIDE}", i.Guide ? GuideFact : "")
+            .Replace("{GIFT_RULE}", i.GiftTastes ? GiftRuleKnown : GiftRuleLearn)
             .Replace("{MODEL_NAME}", i.Model)
             .Replace("{PLAYER_NAME}", i.PlayerName)
             .Replace("{SEAT}", i.Seat)
@@ -99,15 +127,16 @@ public static class Prompts
                 sb.Append($"\nThis is your first morning here. {Join(names)} {(names.Count == 1 ? "lives" : "live")} in the cabins near yours on this farm.");
             sb.Append("\n`say` is heard only by people who can see you, so to talk with someone, go where they are.");
         }
-        sb.Append("\nStart the day: `think` about your plan, then get to work. When the work is done or it gets late, write your `journal` " +
-                  "(diary, lessons, plan, and your `self` / `people` notes), then `go_to_bed`.");
+        sb.Append("\nStart the day: `think` about your plan — choose 1–3 goals for today and prepare before you head out — " +
+                  "then get to work. When the work is done or it gets late, write your `journal` " +
+                  "(diary, lessons, plan, and your `self` / `people` notes), then `sleep`.");
         return sb.ToString();
     }
 
     public static string Nudge(string time, bool inBed) =>
         inBed
             ? "You are in bed; the day ends when every player sleeps. Nothing more to do: end your turn."
-            : $"You ended your turn without an action. It is {time}. Continue the day with a tool call: work, talk, or `journal` and `go_to_bed` when you are done.";
+            : $"You ended your turn without an action. It is {time}. Continue the day with a tool call: work, talk, or `journal` and `sleep` when you are done.";
 
     /// <summary>First message of a continued conversation after a session break (the mod asked the AI to stop and the context restarts).</summary>
     public static string Handoff(int day, string time, string plan, string? lastThink, IEnumerable<string> lastResults)

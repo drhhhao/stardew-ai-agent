@@ -108,6 +108,58 @@ public partial class Pathfinder
         return null;
     }
 
+    /// <summary>Route to the reachable tile with the shortest Manhattan distance to an unreachable goal.
+    /// Returns null when the start is already the closest reachable tile.</summary>
+    public List<Vector2>? FindPathToNearest(IWalkableGrid grid, Vector2 start, Vector2 goal)
+    {
+        var from = new Point((int)start.X, (int)start.Y);
+        var target = new Point((int)goal.X, (int)goal.Y);
+        var steps = new Dictionary<Point, int> { [from] = 0 };
+        var parent = new Dictionary<Point, Point>();
+        var done = new HashSet<Point>();
+        var frontier = new PriorityQueue<Point, int>();
+        frontier.Enqueue(from, Distance(from, target));
+        if (BoxedIn(grid, from))
+        {
+            done.Add(from);
+            foreach (var move in Diagonals)
+            {
+                var next = new Point(from.X + move.X, from.Y + move.Y);
+                if (!Walkable(grid, next)) continue;
+                steps[next] = 1;
+                parent[next] = from;
+                frontier.Enqueue(next, 1 + Distance(next, target));
+            }
+        }
+
+        var best = from;
+        int bestDistance = Distance(from, target);
+        int bestSteps = 0;
+        while (frontier.TryDequeue(out var tile, out _))
+        {
+            if (!done.Add(tile)) continue;
+            if (done.Count > ExpandLimit) break;
+            int distance = Distance(tile, target);
+            if (distance < bestDistance || (distance == bestDistance && steps[tile] < bestSteps))
+            {
+                best = tile;
+                bestDistance = distance;
+                bestSteps = steps[tile];
+            }
+            int cost = steps[tile] + 1;
+            foreach (var move in Moves)
+            {
+                var next = new Point(tile.X + move.X, tile.Y + move.Y);
+                if (done.Contains(next) || (steps.TryGetValue(next, out int known) && known <= cost)) continue;
+                if (!Walkable(grid, next)) continue;
+                steps[next] = cost;
+                parent[next] = tile;
+                frontier.Enqueue(next, cost + Distance(next, target));
+            }
+        }
+        return best == from ? null : Unwind(parent, from, best);
+    }
+
     /// <summary>No tile to the four sides of <paramref name="tile"/> can be stood on.</summary>
     private bool BoxedIn(IWalkableGrid grid, Point tile)
     {

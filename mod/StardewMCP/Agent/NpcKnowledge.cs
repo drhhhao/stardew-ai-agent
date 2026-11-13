@@ -20,7 +20,7 @@ public class GiftRecord
 /// <summary>What one farmer has found out about the villagers. Saved next to the logs, so it survives restarts.</summary>
 public class NpcBook
 {
-    /// <summary>Villager name → qualified item id → taste code. A taste is only here once this farmer gave that gift.</summary>
+    /// <summary>Villager name → qualified item id → taste code. A taste is only here once this farmer gave that gift or the game revealed it.</summary>
     public Dictionary<string, Dictionary<string, int>> Tastes { get; set; } = new();
 
     /// <summary>Villager name → the last gift this farmer gave them.</summary>
@@ -32,7 +32,8 @@ public record PublicTalk(int Day, string Time, string Seat, string Who, string K
 
 /// <summary>
 /// Gift tastes are discovered, not omniscient (the maintainer's comment on #9): a farmer only knows a taste after
-/// giving that gift through talk_to. Each farmer has their own book, so the AIs can trade or lie about tastes.
+/// giving that gift through talk_to, or once the game itself revealed it (<see cref="Merge"/>). Each farmer has their own
+/// book, so the AIs can trade or lie about tastes. RevealGiftTastes / GuideKnowledge open all tastes (<see cref="Knowledge.GiftTastes"/>).
 /// Also keeps the last talks and gifts that other players could see, so villagers() can show them.
 /// </summary>
 public static class NpcKnowledge
@@ -76,6 +77,33 @@ public static class NpcKnowledge
         taste = -1;
         lock (Gate)
             return book.Tastes.TryGetValue(villager, out var items) && items.TryGetValue(itemId, out taste);
+    }
+
+    /// <summary>
+    /// Add tastes the farmer learned in the game itself (gifts given before, hints in dialogue and secret notes: Farmer.giftedItems)
+    /// to the book. Never overwrites a taste already in the book and leaves the last gift alone; saves once when anything is new.
+    /// </summary>
+    public static void Merge(Farmer who, IEnumerable<(string Villager, string ItemId, int Taste)> learned)
+    {
+        var book = Book(who);
+        lock (Gate)
+        {
+            bool changed = false;
+            foreach (var (villager, itemId, taste) in learned)
+            {
+                if (!book.Tastes.TryGetValue(villager, out var items))
+                    book.Tastes[villager] = items = new Dictionary<string, int>();
+                changed |= items.TryAdd(itemId, taste);
+            }
+            if (changed) Save(who, book);
+        }
+    }
+
+    /// <summary>Every villager whose taste for <paramref name="itemId"/> is in the book, with that taste.</summary>
+    public static List<(string Villager, int Taste)> KnownFor(NpcBook book, string itemId)
+    {
+        lock (Gate)
+            return book.Tastes.Where(kv => kv.Value.ContainsKey(itemId)).Select(kv => (kv.Key, kv.Value[itemId])).ToList();
     }
 
     /// <summary>How many (villager, item) tastes the farmer has found out; shown per player in /api/state.</summary>

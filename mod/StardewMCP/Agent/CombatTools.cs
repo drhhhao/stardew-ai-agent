@@ -39,16 +39,16 @@ public static partial class AgentTools
     private static ToolDef CombatTool() => new()
     {
         Name = "fight",
-        Description = "Fight monsters near you (mostly in the Mines). You equip your best weapon, walk to the nearest monster within 12 tiles, face it and keep swinging, then go on to the next. " +
+        Description = "Fight monsters near you with type-specific spacing and line-of-sight checks: support casters are prioritised, chargers and ranged monsters use hit-and-run, flyers are engaged when they enter reach, and blocked attacks reposition instead of swinging through stone. " +
                       "Stops early when no monster is left in range, when your health is low (30% of your maximum, never less than 15) or when a menu opens. About 1.4 game minutes pass per second. " +
                       "Check Health in status before you start. With eat_below it eats the best health-restoring food from your inventory whenever your health falls below that percent, then keeps fighting. " +
                       "The result lists the monsters defeated, the damage you took, the food eaten and the loot.",
         Schema = Obj(new
         {
-            seconds = Int("How long to fight, 3-25 (default 10)"),
+            seconds = Int("Optional: how long to fight, 3-25 (default 10)"),
             eat_below = Int("Optional health percent, 1-99: when your health is below it, eat the best health-restoring food you carry, then keep fighting"),
             reason = Str(ReasonDesc)
-        }, "seconds", "reason"),
+        }, "reason"),
         Run = Fight
     };
 
@@ -122,34 +122,89 @@ public static partial class AgentTools
         return best;
     }
 
-    /// <summary>
-    /// The first steps of the shortest walkable route to a tile next to the monster (empty when already next to it),
-    /// or null when no tile next to it can be reached.
-    /// </summary>
-    private static Stack<Point>? ApproachSteps(GameLocation loc, Monster mon, int maxSteps)
+    internal static bool HasClearMeleePath(GameLocation loc, Point from, Point target) =>
+        CombatRules.LineClear(from.X, from.Y, target.X, target.Y,
+            (x, y) => Pathfinder.IsWalkable(loc, x, y, ignoreVillagers: true));
+
+    private static MonsterRules.Tactic TacticFor(Monster mon) => MonsterRules.ForLive(mon.GetType().Name, mon.displayName);
+
+    /// <summary>Nearest target, with support casters prioritised over ordinary closer monsters.</summary>
+    private static Monster? FightTarget(GameLocation loc, Point from, Func<Monster, bool> skip)
+    {
+        Monster? best = null;
+        float bestScore = float.MaxValue;
+        foreach (var npc in loc.characters)
+        {
+            if (npc is not Monster mon || mon.Health <= 0 || skip(mon)) continue;
+            float distance = TileDistance(from, mon.TilePoint);
+            if (distance > FightSightTiles) continue;
+            float score = CombatRules.TargetPriority(TacticFor(mon), distance);
+            if (best != null && score >= bestScore) continue;
+            best = mon;
+            bestScore = score;
+        }
+        return best;
+    }
+
+    private static Stack<Point>? StepsTo(GameLocation loc, Point me, List<Vector2> route, int maxSteps)
+    {
+        var steps = new Stack<Point>();
+        for (int i = Math.Min(route.Count, maxSteps) - 1; i >= 0; i--)
+            steps.Push(new Point((int)route[i].X, (int)route[i].Y));
+        return steps;
+    }
+
+    /// <summary>A short route to a walkable attack tile with a clear line to the monster, or null when none exists.</summary>
+    private static Stack<Point>? ApproachSteps(GameLocation loc, Monster mon, CombatStyle style, int maxSteps)
     {
         var me = P.TilePoint;
         var goal = mon.TilePoint;
-        var neighbours = Dirs.Select(d => new Point(goal.X + d.X, goal.Y + d.Y))
-            .Where(q => q == me || Pathfinder.IsWalkable(loc, q.X, q.Y))
-            .OrderBy(q => Math.Abs(q.X - me.X) + Math.Abs(q.Y - me.Y))
-            .Take(2)
-            .ToList();
+        float wanted = CombatRules.DesiredRange(style);
+        var candidates = new List<Point>();
+        int radius = (int)Math.Ceiling(wanted + 1);
+        for (int x = goal.X - radius; x <= goal.X + radius; x++)
+        for (int y = goal.Y - radius; y <= goal.Y + radius; y++)
+        {
+            var q = new Point(x, y);
+            float distance = TileDistance(q, goal);
+            if (distance < Math.Max(1f, wanted - 0.75f) || distance > wanted + 0.75f) continue;
+            if (q != me && !Pathfinder.IsWalkable(loc, x, y)) continue;
+            if (!HasClearMeleePath(loc, q, goal)) continue;
+            candidates.Add(q);
+        }
 
         List<Vector2>? best = null;
-        foreach (var q in neighbours)
+        float bestScore = float.MaxValue;
+        foreach (var q in candidates)
         {
             if (q == me) return new Stack<Point>();
             var path = new Pathfinder().FindPath(loc, me.ToVector2(), q.ToVector2());
-            if (path != null && (best == null || path.Count < best.Count)) best = path;
+            if (path == null) continue;
+            float score = path.Count + Math.Abs(TileDistance(q, goal) - wanted) * 2;
+            if (best == null || score < bestScore) { best = path; bestScore = score; }
         }
-        if (best == null) return null;
+        return best == null ? null : StepsTo(loc, me, best, maxSteps);
+    }
 
-        // The controller pops from the top of the stack, so push the route backwards.
-        var steps = new Stack<Point>();
-        for (int i = Math.Min(best.Count, maxSteps) - 1; i >= 0; i--)
-            steps.Push(new Point((int)best[i].X, (int)best[i].Y));
-        return steps;
+    /// <summary>After a hit-and-run swing, step away instead of trading the next blow. Ranged styles prefer cover.</summary>
+    private static Stack<Point>? RetreatSteps(GameLocation loc, Monster mon, CombatStyle style, int maxSteps)
+    {
+        var me = P.TilePoint;
+        var goal = mon.TilePoint;
+        List<Vector2>? best = null;
+        float bestScore = float.MaxValue;
+        foreach (var d in Dirs)
+        for (int n = 3; n <= 5; n++)
+        {
+            var q = new Point(me.X + d.X * n, me.Y + d.Y * n);
+            if (!Pathfinder.IsWalkable(loc, q.X, q.Y) || TileDistance(q, goal) < 2.5f) continue;
+            var path = new Pathfinder().FindPath(loc, me.ToVector2(), q.ToVector2());
+            if (path == null) continue;
+            bool exposed = HasClearMeleePath(loc, q, goal);
+            float score = path.Count - TileDistance(q, goal) + (style == CombatStyle.Ranged && exposed ? 3 : 0);
+            if (best == null || score < bestScore) { best = path; bestScore = score; }
+        }
+        return best == null ? null : StepsTo(loc, me, best, maxSteps);
     }
 
     // The two checks below are ported from Pichaya31847/stardew-ai-agent (MIT, commit 464e777; their days 58-101: whole
@@ -158,9 +213,46 @@ public static partial class AgentTools
     /// <summary>A Rock Crab (or its Lava and Iridium kinds) still in its shell: a weapon only clinks on it, the Pickaxe cracks it (the game's RockCrab.hitWithTool).</summary>
     private static bool InShell(Monster mon) => mon is StardewValley.Monsters.RockCrab { shellGone.Value: false, isStickBug.Value: false };
 
-    /// <summary>Nothing a weapon can do right now: an Armored Bug, a downed Mummy waiting to revive (it takes a bomb), a Duggy under the ground.</summary>
+    /// <summary>
+    /// Nothing a weapon can do right now: an Armored Bug, a downed Mummy (it needs a bomb or a Crusader weapon to finish
+    /// it, but a standing one can be knocked down first), an invulnerable Spiker, a Duggy under the ground. The family
+    /// table decides the invulnerable cases the same way the codex does.
+    /// </summary>
     private static bool CannotBeHit(Monster mon) =>
-        mon.IsInvisible || mon is StardewValley.Monsters.Bug { isArmoredBug.Value: true } || mon is StardewValley.Monsters.Mummy m && m.reviveTimer.Value > 0;
+        mon.IsInvisible ||
+        mon is StardewValley.Monsters.Bug { isArmoredBug.Value: true } ||
+        mon is StardewValley.Monsters.Mummy { reviveTimer.Value: > 0 } ||
+        mon is StardewValley.Monsters.LavaLurk { currentState.Value: StardewValley.Monsters.LavaLurk.State.Submerged } ||
+        MonsterRules.ForClass(mon.GetType().Name) is { Invulnerable: true };
+
+    /// <summary>
+    /// For <see cref="SelfDefense"/>: this monster can be left alone, because no held item would change it — an armored
+    /// bug, a downed mummy, a Duggy underground. A rock crab in its shell is *not* one of these: the pickaxe cracks it,
+    /// and <see cref="DefenseSlot"/> picks the right item for it.
+    /// </summary>
+    internal static bool WeaponCannotHurt(Monster mon) => CannotBeHit(mon);
+
+    /// <summary>
+    /// The slot to swing at <paramref name="mon"/> with: the pickaxe for a rock crab still in its shell (the game's
+    /// <c>RockCrab.hitWithTool</c> cracks it and a weapon only clinks), otherwise the best melee weapon. -1 when the
+    /// farmer carries nothing that helps.
+    /// </summary>
+    internal static int DefenseSlot(Farmer who, Monster mon)
+    {
+        if (InShell(mon))
+        {
+            int pickaxe = who.Items.ToList().FindIndex(i => i is Pickaxe);
+            return pickaxe; // -1: no pickaxe, so nothing to crack the shell with
+        }
+        return BestWeaponSlot(who);
+    }
+
+    /// <summary>
+    /// How close <paramref name="mon"/> has to be for the item <see cref="DefenseSlot"/> picks to reach it: a pickaxe
+    /// swings at the tile in front (1.5 tiles, as <c>fight</c> uses for rock crab shells), a weapon reaches 2. Using
+    /// the weapon range for the pickaxe made every defensive swing at a shelled rock crab miss.
+    /// </summary>
+    internal static float DefenseReach(Monster mon) => DefenseRules.ReachFor(InShell(mon));
 
     /// <summary>Swings at one monster with no change in its health before the fight leaves it alone.</summary>
     private const int FightNoEffectSwings = 8;
@@ -182,7 +274,9 @@ public static partial class AgentTools
         int pickaxe = P.Items.ToList().FindIndex(i => i is Pickaxe);
         var hits = new Dictionary<Monster, (int health, int swings)>(ReferenceEqualityComparer.Instance);
         var noEffect = new HashSet<Monster>(ReferenceEqualityComparer.Instance);
+        var obstructed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         int shellHits = 0;
+        int retreatUntil = 0;
 
         var before = Snapshot();
         int healthStart = P.health;
@@ -231,7 +325,7 @@ public static partial class AgentTools
 
             var me = P.TilePoint;
             // A monster with no walkable route is skipped for a while, unless it has come within reach by itself.
-            var mon = NearestMonster(loc, me, FightSightTiles,
+            var mon = FightTarget(loc, me,
                 m => CannotBeHit(m) || noEffect.Contains(m) || ignoreUntil.TryGetValue(m, out var until) && t < until && TileDistance(me, m.TilePoint) > FightMeleeTiles);
             if (mon == null)
             {
@@ -247,9 +341,29 @@ public static partial class AgentTools
                 continue;
             }
             engaged.TryAdd(mon, mon.Name);
+            var style = CombatRules.StyleFor(TacticFor(mon));
+
+            if (t < retreatUntil)
+            {
+                if (P.controller == null && !P.UsingTool && t >= nextPlan)
+                {
+                    var away = RetreatSteps(loc, mon, style, FightPathSteps);
+                    if (away != null && away.Count > 0)
+                    {
+                        P.controller = new WalkController(away, P, loc);
+                        P.setRunning(true, true);
+                    }
+                    else retreatUntil = t; // nowhere to step back: re-evaluate the attack angle instead of freezing
+                    nextPlan = t + FightReplanTicks;
+                }
+                yield return null;
+                continue;
+            }
 
             bool crack = pickaxe >= 0 && InShell(mon);
-            if (TileDistance(me, mon.TilePoint) <= (crack ? 1.5f : FightMeleeTiles))
+            float reach = crack ? 1.5f : FightMeleeTiles;
+            bool clear = HasClearMeleePath(loc, me, mon.TilePoint);
+            if (TileDistance(me, mon.TilePoint) <= reach && clear)
             {
                 if (P.controller != null)
                 {
@@ -273,14 +387,18 @@ public static partial class AgentTools
                     P.BeginUsingTool();
                     swings++;
                     nextSwing = t + FightSwingTicks;
+                    if (CombatRules.RetreatAfterSwing(style)) retreatUntil = t + 20;
                 }
             }
             else if (!P.UsingTool && t >= nextPlan)
             {
-                // The monster moves, so re-plan a short route every few ticks instead of walking a long one.
-                var steps = ApproachSteps(loc, mon, FightPathSteps);
+                // Re-plan around obstacles and to the type's attack range; never swing through a blocked line.
+                var steps = ApproachSteps(loc, mon, style, FightPathSteps);
                 if (steps == null)
+                {
                     ignoreUntil[mon] = t + FightIgnoreTicks;
+                    if (!clear) obstructed.Add(mon.Name);
+                }
                 else if (steps.Count > 0)
                 {
                     P.controller = new WalkController(steps, P, loc);
@@ -307,10 +425,12 @@ public static partial class AgentTools
             .Select(g => g.Count() > 1 ? $"{g.Key} x{g.Count()}" : g.Key)
             .ToList();
 
-        var sb = new StringBuilder($"Fought {t / 60}s with {weapon.DisplayName} ({swings} swings). {stop}");
+        string weaponDamage = weapon is StardewValley.Tools.MeleeWeapon mw ? $", damage {mw.minDamage.Value}-{mw.maxDamage.Value}" : "";
+        var sb = new StringBuilder($"Fought {t / 60}s with {weapon.DisplayName}{weaponDamage} ({swings} swings). {stop}");
         sb.Append($"\nDefeated: {(defeated.Count > 0 ? string.Join(", ", defeated) : "none")}.");
         if (shellHits > 0) sb.Append($"\nPickaxe on rock crab shells: {shellHits} hit(s). A weapon only clinks on a shell.");
         if (noEffect.Count > 0) sb.Append($"\nNo effect after {FightNoEffectSwings} swings, left alone: {string.Join(", ", noEffect.Select(m => m.Name).Distinct())}.");
+        if (obstructed.Count > 0) sb.Append($"\nLine of sight blocked: {string.Join(", ", obstructed)}. Repositioned instead of swinging through obstacles.");
         if (eaten.Count > 0) sb.Append($"\nAte: {string.Join(", ", eaten)}.");
         if (noFood) sb.Append("\neat_below: you carry no (more) food that restores health.");
         sb.Append($"\nHealth {healthStart} → {P.health}/{P.maxHealth}.");
